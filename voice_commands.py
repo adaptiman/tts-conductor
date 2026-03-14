@@ -506,7 +506,10 @@ class VoiceCommandListener:
                 audio_in_enabled=True,
                 audio_out_enabled=tts_active,
                 camera_out_enabled=False,
-                microphone_out_enabled=False,
+                # microphone_out_enabled controls whether the audio track is
+                # actually published in the Daily call. Must be True for
+                # participants to hear the TTS output.
+                microphone_out_enabled=tts_active,
             ),
         )
         self._daily_transport = transport

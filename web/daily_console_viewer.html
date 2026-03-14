@@ -120,6 +120,33 @@
     if (savedRoom) roomUrlInput.value = savedRoom;
 
     let callObject = null;
+    const audioElements = {};  // sessionId → <audio>
+
+    function attachAudioTrack(sessionId, track, userName) {
+      if (!audioElements[sessionId]) {
+        const audio = document.createElement('audio');
+        audio.autoplay = true;
+        audio.style.display = 'none';
+        document.body.appendChild(audio);
+        audioElements[sessionId] = audio;
+        appendLine(`[viewer] Audio connected: ${userName || sessionId}.`);
+      }
+      const stream = new MediaStream([track]);
+      audioElements[sessionId].srcObject = stream;
+    }
+
+    function detachAudioTrack(sessionId) {
+      const audio = audioElements[sessionId];
+      if (audio) {
+        audio.srcObject = null;
+        audio.remove();
+        delete audioElements[sessionId];
+      }
+    }
+
+    function cleanupAllAudio() {
+      Object.keys(audioElements).forEach(detachAudioTrack);
+    }
 
     function appendLine(text, cssClass = '') {
       const div = document.createElement('div');
@@ -141,12 +168,28 @@
         callObject.off('joined-meeting', onJoined);
         callObject.off('left-meeting', onLeft);
         callObject.off('error', onError);
+        callObject.off('track-started', onTrackStarted);
+        callObject.off('track-stopped', onTrackStopped);
         callObject.destroy();
       } finally {
+        cleanupAllAudio();
         callObject = null;
         setStatus('Not connected');
         appendLine('[viewer] Left room.');
       }
+    }
+
+    function onTrackStarted(event) {
+      const { participant, track } = event;
+      // Only subscribe to remote (bot) audio tracks.
+      if (!participant || participant.local || !track || track.kind !== 'audio') return;
+      attachAudioTrack(participant.session_id, track, participant.user_name);
+    }
+
+    function onTrackStopped(event) {
+      const { participant, track } = event;
+      if (!participant || !track || track.kind !== 'audio') return;
+      detachAudioTrack(participant.session_id);
     }
 
     function onJoined() {
@@ -209,11 +252,24 @@
       callObject.on('left-meeting', onLeft);
       callObject.on('app-message', onAppMessage);
       callObject.on('error', onError);
+      callObject.on('track-started', onTrackStarted);
+      callObject.on('track-stopped', onTrackStopped);
 
       const joinOptions = token ? { url: roomUrl, token } : { url: roomUrl };
       await callObject.join(joinOptions);
 
-      // Optional: keep this viewer silent/invisible in the room media-wise.
+      // Attach any audio tracks from participants already in the room
+      // (e.g. the bot joined before the viewer did).
+      const participants = callObject.participants();
+      for (const [, p] of Object.entries(participants)) {
+        if (p.local) continue;
+        const audioTrack = p.tracks?.audio?.persistentTrack ?? p.tracks?.audio?.track;
+        if (audioTrack && audioTrack.readyState !== 'ended') {
+          attachAudioTrack(p.session_id, audioTrack, p.user_name);
+        }
+      }
+
+      // Keep this viewer silent/invisible in the room media-wise.
       await callObject.setLocalAudio(false);
       await callObject.setLocalVideo(false);
     }
