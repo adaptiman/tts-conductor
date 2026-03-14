@@ -4,7 +4,9 @@ import argparse
 import os
 import sys
 import termios
+import threading
 import textwrap
+import time
 import tty
 
 from article_manager import ArticleManager
@@ -171,6 +173,45 @@ def handle_speak(manager):
         print("\n\n--- Exiting Speak Mode ---")
 
 
+def handle_speak_auto(manager, output, stop_event, delay_seconds=8):
+    """Voice-driven speak mode that advances sentences automatically.
+
+    This mode is intended for the voice command flow:
+      - "read" starts it
+      - "stop" exits it
+    """
+    output.write_line("Parsing article into sentences...")
+    sentences = manager.parse_current_article_sentences()
+    if not sentences:
+        output.write_line("No article content available to speak.")
+        return
+
+    output.write_line(f"\n--- Entering Speak Mode ({len(sentences)} sentences) ---")
+    output.write_line("Voice controls: say 'stop' to exit.\n")
+
+    line_width = int(os.getenv("SPEAK_LINE_WIDTH", "70"))
+
+    try:
+        for sentence_index, sentence_text in enumerate(sentences, start=1):
+            if stop_event.is_set():
+                break
+
+            wrapped_text = textwrap.fill(sentence_text, width=line_width)
+            output.write_line(f"[{sentence_index}/{len(sentences)}]")
+            output.write_line(wrapped_text)
+
+            # Wait in short intervals so "stop" responds quickly.
+            for _ in range(delay_seconds * 10):
+                if stop_event.is_set():
+                    break
+                time.sleep(0.1)
+
+            if stop_event.is_set():
+                break
+    finally:
+        output.write_line("\n--- Exiting Speak Mode ---")
+
+
 def print_audio_devices():
     """Print available audio devices for voice mode setup."""
     from voice_commands import list_audio_devices
@@ -219,9 +260,43 @@ def run_console(
     )
 
     service = ConductorService(manager)
+    speak_stop_event = threading.Event()
+    speak_thread = None
+    speak_state_lock = threading.Lock()
 
     def _print_result(result):
         output.write_lines(result.output_lines)
+
+    def _is_speak_running():
+        with speak_state_lock:
+            return speak_thread is not None and speak_thread.is_alive()
+
+    def _start_voice_speak_mode():
+        nonlocal speak_thread
+
+        if _is_speak_running():
+            output.write_line("Speak mode is already active.")
+            return
+
+        speak_stop_event.clear()
+
+        with speak_state_lock:
+            speak_thread = threading.Thread(
+                target=handle_speak_auto,
+                args=(manager, output, speak_stop_event),
+                daemon=True,
+                name="AutoSpeakMode",
+            )
+            speak_thread.start()
+
+    def _stop_voice_speak_mode():
+        speak_stop_event.set()
+
+        with speak_state_lock:
+            thread = speak_thread
+
+        if thread is not None and thread.is_alive():
+            output.write_line("Stopping speak mode...")
 
     # ------------------------------------------------------------------
     # Optional voice command listener (pipecat)
@@ -234,6 +309,17 @@ def run_console(
             def _on_voice_command(command: str) -> None:
                 """Called from the pipecat background thread on voice detection."""
                 output.write_line(f"\n[voice] {command}")
+
+                if command == "read":
+                    _start_voice_speak_mode()
+                    output.write_prompt_hint()
+                    return
+
+                if command == "stop":
+                    _stop_voice_speak_mode()
+                    output.write_prompt_hint()
+                    return
+
                 _print_result(service.execute_command(command))
                 output.write_prompt_hint()
 
@@ -245,7 +331,7 @@ def run_console(
             )
             output.write_line(
                 "[voice] Starting voice command listener "
-                f"(transport={voice_transport}; say 'next', 'previous', 'first', or 'last')..."
+                f"(transport={voice_transport}; say 'next', 'previous', 'first', 'last', 'read', or 'stop')..."
             )
             voice_listener.start()
 
@@ -299,6 +385,12 @@ def run_console(
             except (AttributeError, ValueError, RuntimeError, OSError) as e:
                 print(f"An error occurred: {e}")
     finally:
+        speak_stop_event.set()
+        with speak_state_lock:
+            thread = speak_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2)
+
         if voice_listener is not None:
             voice_listener.stop()
 

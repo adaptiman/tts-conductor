@@ -63,6 +63,8 @@ _COMMAND_MAP: dict[str, str] = {
     "back": "prev",
     "first": "first",
     "last": "last",
+    "read": "read",
+    "stop": "stop",
 }
 
 
