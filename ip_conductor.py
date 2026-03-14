@@ -16,6 +16,7 @@ from output_adapter import (
     CompositeOutputAdapter,
     ConsoleOutputAdapter,
     DailyMessageOutputAdapter,
+    SpeakingOutputAdapter,
 )
 
 
@@ -328,6 +329,8 @@ def run_console(
                 transport_mode=voice_transport,
                 daily_room_url=daily_room_url,
                 daily_token=daily_token,
+                cartesia_api_key=os.getenv("CARTESIA_API_KEY"),
+                cartesia_voice_id=os.getenv("CARTESIA_VOICE_ID"),
             )
             output.write_line(
                 "[voice] Starting voice command listener "
@@ -336,12 +339,14 @@ def run_console(
             voice_listener.start()
 
             if voice_transport == "daily":
-                output = CompositeOutputAdapter(
-                    [
-                        ConsoleOutputAdapter(),
-                        DailyMessageOutputAdapter(voice_listener.publish_app_message),
-                    ]
-                )
+                adapters = [
+                    ConsoleOutputAdapter(),
+                    DailyMessageOutputAdapter(voice_listener.publish_app_message),
+                ]
+                if voice_listener.tts_enabled:
+                    adapters.append(SpeakingOutputAdapter(voice_listener.speak_text))
+                    output.write_line("[tts] Cartesia TTS enabled — text will be spoken in the room.")
+                output = CompositeOutputAdapter(adapters)
                 output.write_line("[mirror] Daily console mirroring enabled.")
 
             if voice_transport == "local":

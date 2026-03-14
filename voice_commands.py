@@ -47,6 +47,8 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.frames.frames import TTSSpeakFrame
+from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.whisper.stt import Model, WhisperSTTService
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
@@ -173,6 +175,8 @@ class VoiceCommandListener:
         daily_token: Optional[str] = None,
         daily_api_key: Optional[str] = None,
         deepgram_api_key: Optional[str] = None,
+        cartesia_api_key: Optional[str] = None,
+        cartesia_voice_id: Optional[str] = None,
     ):
         self._on_command = on_command
         self._model = model
@@ -182,6 +186,8 @@ class VoiceCommandListener:
         self._daily_token = daily_token
         self._daily_api_key = daily_api_key or os.getenv("DAILY_API_KEY")
         self._deepgram_api_key = deepgram_api_key or os.getenv("DEEPGRAM_API_KEY")
+        self._cartesia_api_key = cartesia_api_key or os.getenv("CARTESIA_API_KEY")
+        self._cartesia_voice_id = cartesia_voice_id or os.getenv("CARTESIA_VOICE_ID")
 
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -300,6 +306,50 @@ class VoiceCommandListener:
             return
         except (AttributeError, OSError, TypeError, ValueError) as exc:
             logger.error(f"[VoiceCommands] Failed to publish Daily app message: {exc!r}")
+
+    @property
+    def tts_enabled(self) -> bool:
+        """True when Cartesia TTS is configured and the transport mode is Daily."""
+        return (
+            self._transport_mode == "daily"
+            and bool(self._cartesia_api_key)
+            and bool(self._cartesia_voice_id)
+        )
+
+    def speak_text(self, text: str) -> None:
+        """Inject text for immediate TTS synthesis through the Cartesia pipeline.
+
+        The text is wrapped in a :class:`TTSSpeakFrame` and queued DOWNSTREAM
+        into the running pipeline where CartesiaTTSService will convert it to
+        audio and DailyTransport will broadcast it to room participants.
+
+        This method is thread-safe and non-blocking; it schedules the injection
+        onto the pipeline's asyncio event loop and returns immediately.
+        """
+        if not self.tts_enabled:
+            return
+        if not self._loop or not self._task:
+            return
+        if not self._daily_joined:
+            return
+
+        async def _inject() -> None:
+            await self._task.queue_frame(TTSSpeakFrame(text=text))
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_inject(), self._loop)
+
+            def _on_done(done_future):
+                exc = done_future.exception()
+                if exc is not None:
+                    logger.error(f"[TTS] speak_text failed: {exc!r}")
+
+            future.add_done_callback(_on_done)
+        except RuntimeError:
+            # Event loop may be shutting down; silently discard late requests.
+            pass
+        except (AttributeError, OSError, TypeError, ValueError) as exc:
+            logger.error(f"[TTS] speak_text error: {exc!r}")
 
     # ------------------------------------------------------------------
     # Internal
@@ -446,13 +496,15 @@ class VoiceCommandListener:
 
         print(f"[voice] Daily room: {room_url}")
 
+        tts_active = bool(self._cartesia_api_key and self._cartesia_voice_id)
+
         transport = DailyTransport(
             room_url,
             token,
             "Instapaper Voice Bot",
             DailyParams(
                 audio_in_enabled=True,
-                audio_out_enabled=False,
+                audio_out_enabled=tts_active,
                 camera_out_enabled=False,
                 microphone_out_enabled=False,
             ),
@@ -464,6 +516,15 @@ class VoiceCommandListener:
         )
 
         command_processor = VoiceCommandProcessor(on_command=self._on_command)
+
+        if tts_active:
+            logger.info(
+                f"[TTS] Cartesia TTS enabled (voice={self._cartesia_voice_id!r})"
+            )
+            tts = CartesiaTTSService(
+                api_key=self._cartesia_api_key,
+                voice_id=self._cartesia_voice_id,
+            )
 
         @transport.event_handler("on_joined")
         async def on_joined(_transport, _data):
@@ -486,4 +547,5 @@ class VoiceCommandListener:
                 f"id={participant.get('id', 'unknown')}"
             )
 
-        return Pipeline([transport.input(), stt, command_processor])
+        if tts_active:
+            return Pipeline([transport.input(), stt, command_processor, tts, transport.output()])

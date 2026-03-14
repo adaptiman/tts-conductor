@@ -5,7 +5,17 @@ frontends (e.g. Daily room UI message publisher) to reuse command execution
 without being coupled to direct ``print()`` calls.
 """
 
+import re
 from typing import Callable, Iterable, Protocol
+
+# Lines that match these patterns carry no useful spoken content.
+_TTS_SKIP_RE = re.compile(
+    r"^\[(\d+)/(\d+)\]$"          # sentence counter "[N/M]"
+    r"|^-{3}"                       # section dividers "---..."
+    r"|^\[voice\]"                  # voice-mode status
+    r"|^\[mirror\]"                 # mirror status
+    r"|^\[tts\]"                    # TTS status
+)
 
 
 class OutputAdapter(Protocol):
@@ -91,3 +101,34 @@ class DailyMessageOutputAdapter:
             self._publish_message({"type": "prompt_hint"})
         except (AttributeError, RuntimeError, OSError, ValueError):
             return
+
+
+class SpeakingOutputAdapter:
+    """Adapter that speaks text lines via a TTS callback.
+
+    Lines that are purely UI chrome (sentence counters, section dividers, and
+    internal status markers) are silently skipped so only meaningful article
+    and command-result text reaches the TTS engine.
+    """
+
+    def __init__(self, speak_fn: Callable[[str], None]) -> None:
+        self._speak_fn = speak_fn
+
+    def _should_speak(self, text: str) -> bool:
+        clean = text.strip()
+        return bool(clean) and not _TTS_SKIP_RE.match(clean)
+
+    def write_line(self, text: str = "") -> None:
+        if not self._should_speak(text):
+            return
+        try:
+            self._speak_fn(text.strip())
+        except (AttributeError, RuntimeError, OSError, ValueError):
+            return
+
+    def write_lines(self, lines: Iterable[str]) -> None:
+        for line in lines:
+            self.write_line(line)
+
+    def write_prompt_hint(self) -> None:
+        pass  # Prompt hints have no spoken equivalent.
