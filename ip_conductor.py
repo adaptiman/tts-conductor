@@ -5,11 +5,16 @@ import os
 import sys
 import termios
 import textwrap
-import time
 import tty
 
 from article_manager import ArticleManager
+from conductor_service import ConductorService
 from dotenv import load_dotenv
+from output_adapter import (
+    CompositeOutputAdapter,
+    ConsoleOutputAdapter,
+    DailyMessageOutputAdapter,
+)
 
 
 def _maybe_reexec_in_project_venv():
@@ -37,104 +42,38 @@ def _maybe_reexec_in_project_venv():
     os.execv(project_python, [project_python, os.path.abspath(__file__), *sys.argv[1:]])
 
 
-def slow_print(text, delay=0.05):
-    """Prints strings slowly to the console."""
-    for char in text:
-        print(char, end="", flush=True)
-        time.sleep(delay)
-    print()
-
-
-def display_title(manager):
-    """Display the current bookmark title."""
-    title = manager.get_current_title()
-    if title:
-        print(title)
-    else:
-        if manager.get_bookmark_count() == 0:
-            print("No bookmarks found.")
-        else:
-            print("Current index is out of range.")
-
-
-def display_article(manager, bookmark_number=None):
-    """Display the bookmark content with word wrapping."""
-    line_width = int(os.getenv("SPEAK_LINE_WIDTH", "70"))
-    if bookmark_number is not None:
-        if manager.set_bookmark_by_number(bookmark_number):
-            article = manager.get_current_article()
-            if article:
-                print(textwrap.fill(article, width=line_width))
-            else:
-                print(f"Unable to read bookmark {bookmark_number}")
-        else:
-            print(f"Invalid bookmark number: {bookmark_number}")
-    else:
-        article = manager.get_current_article()
-        if article:
-            print(textwrap.fill(article, width=line_width))
-        else:
-            if manager.get_bookmark_count() == 0:
-                print("No bookmarks found.")
-            else:
-                print("Current index is out of range.")
-
-
-def display_bookmarks(manager):
-    """Display all bookmarks with numbers."""
-    bookmarks = manager.get_bookmarks_list()
-    if not bookmarks:
-        print("No bookmarks found.")
-    else:
-        for i, title in enumerate(bookmarks, start=1):
-            print(f"{i}. {title}")
-
-
-def handle_add_bookmark(manager):
+def handle_add_bookmark(service, output):
     """Handle adding a new bookmark."""
     url = input("Enter the URL to bookmark: ").strip()
     if not url:
-        print("No URL entered. Bookmark not added.")
+        output.write_line("No URL entered. Bookmark not added.")
         return
-    success, url, error = manager.add_bookmark_url(url)
-    if success:
-        print(f"Bookmark added successfully: {url}")
-    else:
-        print(f"Error adding bookmark: {error}")
+    result = service.add_bookmark(url)
+    output.write_lines(result.output_lines)
 
 
-def handle_delete_bookmark(manager):
+def handle_delete_bookmark(service, output):
     """Handle deleting the current bookmark."""
-    info = manager.get_current_bookmark_info()
-    if not info:
-        print("No bookmark to delete.")
-        return
-    success, deleted_title, error = manager.delete_current_bookmark()
-    if success:
-        print(f"'{deleted_title}' deleted.")
-        display_title(manager)
-    else:
-        print(f"Error deleting bookmark: {error}")
+    result = service.delete_current_bookmark()
+    output.write_lines(result.output_lines)
 
 
-def handle_star_bookmark(manager):
+def handle_star_bookmark(service, output):
     """Handle starring the current bookmark."""
-    success, title, error = manager.star_current_bookmark()
-    if success:
-        print(f"Bookmark '{title}' starred successfully.")
-    else:
-        print(f"Error starring bookmark: {error}")
+    result = service.star_current_bookmark()
+    output.write_lines(result.output_lines)
 
 
-def handle_create_highlight(manager):
+def handle_create_highlight(service, output):
     """Handle creating a highlight for the current bookmark."""
+    manager = service.manager
     info = manager.get_current_bookmark_info()
     if not info:
-        print("No bookmark to create highlight for.")
+        output.write_line("No bookmark to create highlight for.")
         return
     title = info[0]
-    print(f"Creating highlight for: {title}")
-    print("Enter the text you want to highlight (press Enter twice to finish):")
+    output.write_line(f"Creating highlight for: {title}")
+    output.write_line("Enter the text you want to highlight (press Enter twice to finish):")
     lines = []
     empty_line_count = 0
     while empty_line_count < 2:
@@ -148,24 +87,16 @@ def handle_create_highlight(manager):
         lines.pop()
     highlight_text = "\n".join(lines).strip()
     if not highlight_text:
-        print("No text entered. Highlight cancelled.")
+        output.write_line("No text entered. Highlight cancelled.")
         return
-    success, title, highlight, error = manager.create_highlight_for_current(highlight_text)
-    if success:
-        print("Highlight created successfully!")
-        ellipsis = "..." if len(highlight) > 100 else ""
-        print(f"Highlighted text: {highlight[:100]}{ellipsis}")
-    else:
-        print(f"Error creating highlight: {error}")
+    result = service.create_highlight_for_current(highlight_text)
+    output.write_lines(result.output_lines)
 
 
-def handle_archive_bookmark(manager):
+def handle_archive_bookmark(service, output):
     """Handle archiving the current bookmark."""
-    success, title, error = manager.archive_current_bookmark()
-    if success:
-        print(f"Bookmark '{title}' archived successfully.")
-    else:
-        print(f"Error archiving bookmark: {error}")
+    result = service.archive_current_bookmark()
+    output.write_lines(result.output_lines)
 
 
 def handle_speak(manager):
@@ -240,30 +171,6 @@ def handle_speak(manager):
         print("\n\n--- Exiting Speak Mode ---")
 
 
-def handle_navigation(manager, direction):
-    """Handle navigation commands."""
-    if direction == "next":
-        if manager.next_bookmark():
-            display_title(manager)
-        else:
-            print("Already at the last bookmark.")
-    elif direction == "prev":
-        if manager.prev_bookmark():
-            display_title(manager)
-        else:
-            print("Already at the first bookmark.")
-    elif direction == "first":
-        if manager.first_bookmark():
-            display_title(manager)
-        else:
-            print("No bookmarks found.")
-    elif direction == "last":
-        if manager.last_bookmark():
-            display_title(manager)
-        else:
-            print("No bookmarks found.")
-
-
 def print_audio_devices():
     """Print available audio devices for voice mode setup."""
     from voice_commands import list_audio_devices
@@ -299,15 +206,22 @@ def run_console(
                navigation commands can also be issued by speaking into the
                microphone.
     """
-    print("Welcome to the Instapaper Console App!")
-    print(
+    output = ConsoleOutputAdapter()
+
+    output.write_line("Welcome to the Instapaper Console App!")
+    output.write_line(
         "Commands: 'bookmarks' (a), 'add', 'delete' (d), 'star' (s), 'highlight', "
         "'archive' (c), 'speak' (k), 'read' (r), or 'exit'."
     )
-    print("Navigation: 'title', 'next' (n), 'prev' (p), 'first', 'last'")
-    print(
+    output.write_line("Navigation: 'title', 'next' (n), 'prev' (p), 'first', 'last'")
+    output.write_line(
         "With numbers: 'read <number>' (r <number>), 'speak <number>' (k <number>), '<number>'"
     )
+
+    service = ConductorService(manager)
+
+    def _print_result(result):
+        output.write_lines(result.output_lines)
 
     # ------------------------------------------------------------------
     # Optional voice command listener (pipecat)
@@ -319,9 +233,9 @@ def run_console(
 
             def _on_voice_command(command: str) -> None:
                 """Called from the pipecat background thread on voice detection."""
-                print(f"\n[voice] {command}")
-                handle_navigation(manager, command)
-                print("> ", end="", flush=True)
+                output.write_line(f"\n[voice] {command}")
+                _print_result(service.execute_command(command))
+                output.write_prompt_hint()
 
             voice_listener = VoiceCommandListener(
                 on_command=_on_voice_command,
@@ -329,94 +243,56 @@ def run_console(
                 daily_room_url=daily_room_url,
                 daily_token=daily_token,
             )
-            print(
+            output.write_line(
                 "[voice] Starting voice command listener "
                 f"(transport={voice_transport}; say 'next', 'previous', 'first', or 'last')..."
             )
             voice_listener.start()
+
+            if voice_transport == "daily":
+                output = CompositeOutputAdapter(
+                    [
+                        ConsoleOutputAdapter(),
+                        DailyMessageOutputAdapter(voice_listener.publish_app_message),
+                    ]
+                )
+                output.write_line("[mirror] Daily console mirroring enabled.")
+
             if voice_transport == "local":
-                print(
+                output.write_line(
                     "[voice] Listening. Whisper model will download on first run (~300 MB)."
                 )
             else:
-                print("[voice] Listening via Daily WebRTC + Deepgram.")
+                output.write_line("[voice] Listening via Daily WebRTC + Deepgram.")
         except (ImportError, RuntimeError, OSError, ValueError) as exc:
-            print(f"[voice] Could not start voice listener: {exc}")
+            output.write_line(f"[voice] Could not start voice listener: {exc}")
             voice_listener = None
 
     # Display the current bookmark title at startup
-    display_title(manager)
+    _print_result(service.execute_command("title"))
 
     try:
         while True:
             try:
                 cmd = input("> ").strip()
-                cmd_lower = cmd.lower()
+                result = service.execute_command(cmd)
 
-                if cmd_lower == "exit":
-                    print("Goodbye!")
-                    break
-                elif cmd_lower in ("bookmarks", "articles", "a"):
-                    display_bookmarks(manager)
-                elif cmd_lower == "add":
-                    handle_add_bookmark(manager)
-                elif cmd_lower in ("delete", "d"):
-                    handle_delete_bookmark(manager)
-                elif cmd_lower in ("star", "s"):
-                    handle_star_bookmark(manager)
-                elif cmd_lower == "highlight":
-                    handle_create_highlight(manager)
-                elif cmd_lower in ("archive", "c"):
-                    handle_archive_bookmark(manager)
-                elif cmd_lower in ("speak", "k"):
+                if result.action == "add":
+                    handle_add_bookmark(service, output)
+                elif result.action == "delete":
+                    handle_delete_bookmark(service, output)
+                elif result.action == "star":
+                    handle_star_bookmark(service, output)
+                elif result.action == "highlight":
+                    handle_create_highlight(service, output)
+                elif result.action == "archive":
+                    handle_archive_bookmark(service, output)
+                elif result.action == "speak":
                     handle_speak(manager)
-                elif cmd_lower == "title":
-                    display_title(manager)
-                elif cmd_lower in ("next", "n"):
-                    handle_navigation(manager, "next")
-                elif cmd_lower in ("previous", "prev", "p"):
-                    handle_navigation(manager, "prev")
-                elif cmd_lower == "first":
-                    handle_navigation(manager, "first")
-                elif cmd_lower == "last":
-                    handle_navigation(manager, "last")
-                elif cmd_lower in ("read", "r"):
-                    display_article(manager)
-                elif cmd_lower.startswith("read ") or cmd_lower.startswith("r "):
-                    try:
-                        parts = cmd.split()
-                        if len(parts) == 2:
-                            display_article(manager, int(parts[1]))
-                        else:
-                            print("Usage: read <number> or r <number>")
-                    except ValueError:
-                        print("Invalid bookmark number. Usage: read <number> or r <number>")
-                elif cmd_lower.startswith("speak ") or cmd_lower.startswith("k "):
-                    try:
-                        parts = cmd.split()
-                        if len(parts) == 2:
-                            bookmark_num = int(parts[1])
-                            if manager.set_bookmark_by_number(bookmark_num):
-                                handle_speak(manager)
-                            else:
-                                print(f"Invalid article number: {bookmark_num}")
-                        else:
-                            print("Usage: speak <number> or k <number>")
-                    except ValueError:
-                        print("Invalid bookmark number. Usage: speak <number> or k <number>")
-                else:
-                    try:
-                        bookmark_num = int(cmd)
-                        if manager.set_bookmark_by_number(bookmark_num):
-                            display_title(manager)
-                        else:
-                            print(f"Invalid article number: {bookmark_num}")
-                    except ValueError:
-                        print(
-                            "Unknown command. Try: 'bookmarks' (a), 'add', 'delete' (d), 'star' (s), "
-                            "'highlight', 'archive' (c), 'speak' (k), 'read' (r), 'next' (n), 'prev' (p), "
-                            "'first', 'last', 'title', '<number>', 'read <number>', 'speak <number>', or 'exit'."
-                        )
+                _print_result(result)
+
+                if result.should_exit:
+                    break
             except KeyboardInterrupt:
                 print("\nGoodbye!")
                 break

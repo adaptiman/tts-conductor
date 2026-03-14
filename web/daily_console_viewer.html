@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Daily Console Viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1115;
+      --panel: #171a21;
+      --text: #e6e6e6;
+      --muted: #9aa3b2;
+      --accent: #5b8cff;
+      --border: #2a3040;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+
+    .wrap {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 12px;
+      padding: 12px;
+      height: calc(100% - 24px);
+      box-sizing: border-box;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto auto;
+      gap: 8px;
+      align-items: center;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+    }
+
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      background: #0d1016;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px;
+    }
+
+    button {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button.secondary {
+      background: #293144;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .console {
+      background: #0d1016;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      overflow: auto;
+      white-space: pre-wrap;
+      line-height: 1.4;
+    }
+
+    .line {
+      margin: 0;
+    }
+
+    .prompt {
+      color: #7bd88f;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="controls">
+      <input id="roomUrl" placeholder="Daily room URL (https://...daily.co/...)" />
+      <input id="token" placeholder="Daily token (optional for public rooms)" />
+      <button id="joinBtn">Join</button>
+      <button id="leaveBtn" class="secondary">Leave</button>
+      <div class="status" id="status">Not connected</div>
+    </div>
+
+    <div class="console" id="console"></div>
+  </div>
+
+  <script type="module">
+    import DailyIframe from 'https://unpkg.com/@daily-co/daily-js?module';
+
+    const roomUrlInput = document.getElementById('roomUrl');
+    const tokenInput = document.getElementById('token');
+    const joinBtn = document.getElementById('joinBtn');
+    const leaveBtn = document.getElementById('leaveBtn');
+    const statusEl = document.getElementById('status');
+    const consoleEl = document.getElementById('console');
+
+    const savedRoom = localStorage.getItem('daily_console_room_url');
+    if (savedRoom) roomUrlInput.value = savedRoom;
+
+    let callObject = null;
+
+    function appendLine(text, cssClass = '') {
+      const div = document.createElement('div');
+      div.className = `line ${cssClass}`.trim();
+      div.textContent = text;
+      consoleEl.appendChild(div);
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    async function leave() {
+      if (!callObject) return;
+      try {
+        await callObject.leave();
+        callObject.off('app-message', onAppMessage);
+        callObject.off('joined-meeting', onJoined);
+        callObject.off('left-meeting', onLeft);
+        callObject.off('error', onError);
+        callObject.destroy();
+      } finally {
+        callObject = null;
+        setStatus('Not connected');
+        appendLine('[viewer] Left room.');
+      }
+    }
+
+    function onJoined() {
+      setStatus('Connected');
+      appendLine('[viewer] Joined room.');
+    }
+
+    function onLeft() {
+      setStatus('Not connected');
+      appendLine('[viewer] Left room.');
+    }
+
+    function onError(ev) {
+      setStatus('Error');
+      appendLine(`[viewer] Error: ${JSON.stringify(ev?.error || ev)}`);
+    }
+
+    function onAppMessage(ev) {
+      // Daily SDK payload shape may vary by sender/client.
+      let payload = ev?.data?.message ?? ev?.message ?? ev?.data;
+      if (!payload) {
+        appendLine(`[viewer] app-message (empty): ${JSON.stringify(ev)}`);
+        return;
+      }
+
+      if (typeof payload !== 'object') {
+        try {
+          payload = JSON.parse(String(payload));
+        } catch {
+          appendLine(String(payload));
+          return;
+        }
+      }
+
+      if (payload.type === 'console_line') {
+        appendLine(payload.text ?? '');
+      } else if (payload.type === 'prompt_hint') {
+        appendLine('> ', 'prompt');
+      } else {
+        appendLine(`[viewer] app-message (raw): ${JSON.stringify(payload)}`);
+      }
+    }
+
+    async function join() {
+      const roomUrl = roomUrlInput.value.trim();
+      const token = tokenInput.value.trim();
+
+      if (!roomUrl) {
+        appendLine('[viewer] Room URL is required.');
+        return;
+      }
+
+      await leave();
+
+      localStorage.setItem('daily_console_room_url', roomUrl);
+      setStatus('Connecting...');
+
+      callObject = DailyIframe.createCallObject();
+      callObject.on('joined-meeting', onJoined);
+      callObject.on('left-meeting', onLeft);
+      callObject.on('app-message', onAppMessage);
+      callObject.on('error', onError);
+
+      const joinOptions = token ? { url: roomUrl, token } : { url: roomUrl };
+      await callObject.join(joinOptions);
+
+      // Optional: keep this viewer silent/invisible in the room media-wise.
+      await callObject.setLocalAudio(false);
+      await callObject.setLocalVideo(false);
+    }
+
+    joinBtn.addEventListener('click', () => {
+      join().catch((err) => {
+        setStatus('Error');
+        appendLine(`[viewer] Join failed: ${err?.message || err}`);
+      });
+    });
+
+    leaveBtn.addEventListener('click', () => {
+      leave().catch((err) => {
+        appendLine(`[viewer] Leave failed: ${err?.message || err}`);
+      });
+    });
+
+    appendLine('[viewer] Ready. Join the same Daily room used by the bot to see mirrored console output.');
+  </script>
+</body>
+</html>

@@ -22,10 +22,11 @@ Usage
 """
 
 import asyncio
+import json
 import os
 import threading
 import time
-from typing import Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, cast
 
 import aiohttp
 from loguru import logger
@@ -39,6 +40,7 @@ from pipecat.frames.frames import (
     EndFrame,
     Frame,
     InterimTranscriptionFrame,
+    OutputTransportMessageFrame,
     TranscriptionFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -186,6 +188,10 @@ class VoiceCommandListener:
         self._input_device_index: Optional[int] = None
         self._daily_session: Optional[aiohttp.ClientSession] = None
         self._startup_error: Optional[str] = None
+        self._daily_transport: Optional[DailyTransport] = None
+        self._daily_joined = False
+        self._pending_daily_messages: list[dict] = []
+        self._pending_daily_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -229,6 +235,69 @@ class VoiceCommandListener:
             asyncio.run_coroutine_threadsafe(self._daily_session.close(), self._loop)
         if self._thread:
             self._thread.join(timeout=10)
+
+    def publish_app_message(self, payload: dict) -> None:
+        """Publish a Daily app message when running in Daily transport mode."""
+        if not self._loop or not self._daily_transport or self._transport_mode != "daily":
+            return
+
+        if not self._daily_joined:
+            with self._pending_daily_lock:
+                self._pending_daily_messages.append(payload)
+            return
+
+        async def _send_message() -> None:
+            frame = OutputTransportMessageFrame(json.dumps(payload))
+
+            # Also mirror plain console lines into Daily Prebuilt chat so text
+            # is visible in the room UI without a custom viewer page.
+            if payload.get("type") == "console_line":
+                chat_sender = cast(
+                    Optional[Callable[[str, Optional[str]], Awaitable[Any]]],
+                    getattr(self._daily_transport, "send_prebuilt_chat_message", None),
+                )
+                if chat_sender is not None:
+                    await chat_sender(str(payload.get("text", "")), "Instapaper Voice Bot")
+
+            # Prefer DailyTransport's native app-message API.
+            send_message = cast(
+                Optional[Callable[[OutputTransportMessageFrame], Awaitable[Any]]],
+                getattr(self._daily_transport, "send_message", None),
+            )
+            if send_message is not None:
+                await send_message(frame)
+                return
+
+            # Fallback path if the transport API changes.
+            await self._daily_transport.output().queue_frame(frame)
+
+        try:
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+
+            # If we are already in the transport loop thread, schedule directly
+            # to avoid deadlocking on a blocking wait.
+            if running_loop is self._loop:
+                self._loop.create_task(_send_message())
+                return
+
+            future = asyncio.run_coroutine_threadsafe(_send_message(), self._loop)
+
+            def _on_done(done_future):
+                exc = done_future.exception()
+                if exc is not None:
+                    logger.error(
+                        f"[VoiceCommands] Failed to publish Daily app message: {exc!r}"
+                    )
+
+            future.add_done_callback(_on_done)
+        except RuntimeError:
+            # Event loop may be shutting down; ignore late publishes.
+            return
+        except (AttributeError, OSError, TypeError, ValueError) as exc:
+            logger.error(f"[VoiceCommands] Failed to publish Daily app message: {exc!r}")
 
     # ------------------------------------------------------------------
     # Internal
@@ -325,6 +394,10 @@ class VoiceCommandListener:
         finally:
             if self._daily_session and not self._daily_session.closed:
                 await self._daily_session.close()
+            self._daily_transport = None
+            self._daily_joined = False
+            with self._pending_daily_lock:
+                self._pending_daily_messages.clear()
 
     def _build_local_pipeline(self) -> Pipeline:
         """Build local mic + local Whisper pipeline."""
@@ -344,6 +417,7 @@ class VoiceCommandListener:
         )
 
         command_processor = VoiceCommandProcessor(on_command=self._on_command)
+        # Keep the original working flow for command recognition.
         return Pipeline([transport.input(), stt, command_processor])
 
     async def _build_daily_pipeline(self) -> Pipeline:
@@ -381,12 +455,27 @@ class VoiceCommandListener:
                 microphone_out_enabled=False,
             ),
         )
+        self._daily_transport = transport
 
         stt = DeepgramSTTService(
             api_key=self._deepgram_api_key,
         )
 
         command_processor = VoiceCommandProcessor(on_command=self._on_command)
+
+        @transport.event_handler("on_joined")
+        async def on_joined(_transport, _data):
+            self._daily_joined = True
+            with self._pending_daily_lock:
+                pending = list(self._pending_daily_messages)
+                self._pending_daily_messages.clear()
+
+            for pending_payload in pending:
+                self.publish_app_message(pending_payload)
+
+        @transport.event_handler("on_left")
+        async def on_left(_transport):
+            self._daily_joined = False
 
         @transport.event_handler("on_first_participant_joined")
         async def on_first_participant_joined(_transport, participant):
