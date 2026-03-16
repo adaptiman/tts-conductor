@@ -197,13 +197,33 @@ class ArticleManager:
                 return (False, title, highlight_text, "No text provided for highlight")
 
             highlight_text = highlight_text.strip()
-            try:
-                # Try creating highlight without position parameter
-                # The Instapaper API may be strict about position matching
-                m.create_highlight(highlight_text)
-                return (True, title, highlight_text, None)
-            except (AttributeError, ValueError, RuntimeError, OSError) as e:
-                return (False, title, highlight_text, str(e))
+
+            # Instapaper can be strict about exact text/position matching.
+            # Try a small set of variants and prefer position-aware requests
+            # when we can locate the text in the article body.
+            article_text = str(getattr(m, "text", "") or "")
+            normalized_text = " ".join(highlight_text.split())
+            candidates = [highlight_text]
+            if normalized_text and normalized_text != highlight_text:
+                candidates.append(normalized_text)
+
+            last_error = None
+            for candidate in candidates:
+                try:
+                    if article_text:
+                        found_at = article_text.find(candidate)
+                        if found_at >= 0:
+                            m.create_highlight(candidate, position=found_at)
+                            return (True, title, candidate, None)
+
+                    # Fallback if no exact position match was found.
+                    m.create_highlight(candidate)
+                    return (True, title, candidate, None)
+                except Exception as e:
+                    last_error = str(e)
+                    continue
+
+            return (False, title, highlight_text, last_error or "Unknown highlight error")
         else:
             return (False, None, highlight_text, "Current index is out of range")
 

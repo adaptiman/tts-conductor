@@ -37,24 +37,25 @@ import pyaudio
 # ---------------------------------------------------------------------------
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     EndFrame,
     Frame,
+    InterruptionFrame,
     InterimTranscriptionFrame,
     OutputTransportMessageFrame,
     TranscriptionFrame,
+    TTSSpeakFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.whisper.stt import Model, WhisperSTTService
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
-
-
 # ---------------------------------------------------------------------------
 # Spoken-word → command name map
 # ---------------------------------------------------------------------------
@@ -65,6 +66,8 @@ _COMMAND_MAP: dict[str, str] = {
     "back": "prev",
     "first": "first",
     "last": "last",
+    "highlight": "highlight",
+    "mark": "highlight",
     "read": "read",
     "stop": "stop",
 }
@@ -114,6 +117,7 @@ class VoiceCommandProcessor(FrameProcessor):
         super().__init__(**kwargs)
         self._on_command = on_command
         self._last_command_at = 0.0
+        self._last_command: Optional[str] = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -130,16 +134,81 @@ class VoiceCommandProcessor(FrameProcessor):
                 if word in _COMMAND_MAP:
                     command = _COMMAND_MAP[word]
                     now = time.monotonic()
-                    if now - self._last_command_at < 1.0:
+                    # Debounce only repeated identical commands; allow a
+                    # different command immediately after the previous one.
+                    if (
+                        command == self._last_command
+                        and now - self._last_command_at < 1.0
+                    ):
                         break
                     self._last_command_at = now
+                    self._last_command = command
                     logger.info(f"[VoiceCommands] Command detected: {command!r}")
                     try:
                         self._on_command(command)
-                    except (AttributeError, KeyError, OSError, RuntimeError, ValueError) as exc:
+                    except Exception as exc:
                         logger.error(f"[VoiceCommands] on_command raised: {exc}")
                     break  # Only fire one command per utterance
 
+        await self.push_frame(frame, direction)
+
+
+class SpeechCompletionWatcher(FrameProcessor):
+    """Tracks a full speaking cycle and signals completion.
+
+    We only signal completion after seeing BOTH:
+      1) ``BotStartedSpeakingFrame``
+      2) ``BotStoppedSpeakingFrame``
+
+    This avoids stale/stuck stop frames from a previous utterance making the
+    read loop advance too early.
+    """
+
+    def __init__(
+        self,
+        on_started: Optional[Callable[[], None]] = None,
+        on_stopped: Optional[Callable[[], None]] = None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._event = threading.Event()
+        self._awaiting_cycle = False
+        self._started_seen = False
+        self._lock = threading.Lock()
+        self._on_started = on_started
+        self._on_stopped = on_stopped
+
+    def reset(self) -> None:
+        """Arm watcher for the next utterance and clear prior signal."""
+        with self._lock:
+            self._awaiting_cycle = True
+            self._started_seen = False
+            self._event.clear()
+
+    def wait(self, timeout: float = 60.0) -> bool:
+        """Block until speaking stops or timeout expires.
+
+        Returns True if the utterance completed, False on timeout.
+        """
+        return self._event.wait(timeout=timeout)
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if direction == FrameDirection.UPSTREAM:
+            with self._lock:
+                if self._awaiting_cycle and isinstance(frame, BotStartedSpeakingFrame):
+                    self._started_seen = True
+                    if self._on_started is not None:
+                        self._on_started()
+                elif (
+                    self._awaiting_cycle
+                    and self._started_seen
+                    and isinstance(frame, BotStoppedSpeakingFrame)
+                ):
+                    self._awaiting_cycle = False
+                    self._event.set()
+                    if self._on_stopped is not None:
+                        self._on_stopped()
         await self.push_frame(frame, direction)
 
 
@@ -200,6 +269,12 @@ class VoiceCommandListener:
         self._daily_joined = False
         self._pending_daily_messages: list[dict] = []
         self._pending_daily_lock = threading.Lock()
+        self._speech_watcher: Optional[SpeechCompletionWatcher] = None
+        self._utterance_lock = threading.Lock()
+        self._pending_utterance: Optional[dict[str, Any]] = None
+        self._active_utterance: Optional[dict[str, Any]] = None
+        self._last_completed_utterance: Optional[dict[str, Any]] = None
+        self._last_completed_at: float = 0.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -316,6 +391,74 @@ class VoiceCommandListener:
             and bool(self._cartesia_voice_id)
         )
 
+    def reset_speech_done(self) -> None:
+        """Clear the speech-completion signal before queuing a new utterance."""
+        if self._speech_watcher is not None:
+            self._speech_watcher.reset()
+
+    def wait_for_speech_done(self, timeout: float = 0.1) -> bool:
+        """Wait up to *timeout* seconds for the current utterance to finish.
+
+        Returns True when speaking has stopped, False on timeout.
+        Falls back to True immediately if no watcher is available (TTS not active).
+        """
+        if self._speech_watcher is None:
+            return True
+        return self._speech_watcher.wait(timeout=timeout)
+
+    def prepare_utterance_tracking(
+        self,
+        text: str,
+        sentence_index: int = 0,
+        sentence_total: int = 0,
+    ) -> None:
+        """Register the next utterance before it is queued to TTS."""
+        with self._utterance_lock:
+            self._pending_utterance = {
+                "text": text,
+                "index": sentence_index,
+                "total": sentence_total,
+            }
+
+    def get_current_utterance(self) -> Optional[dict[str, Any]]:
+        """Return the best highlight target utterance.
+
+        Preference order:
+          1) currently active utterance
+          2) just-completed utterance within a short grace window
+        """
+        with self._utterance_lock:
+            if self._active_utterance is not None:
+                return dict(self._active_utterance)
+
+            if (
+                self._last_completed_utterance is not None
+                and time.monotonic() - self._last_completed_at <= 4.0
+            ):
+                return dict(self._last_completed_utterance)
+
+            return None
+
+    def get_active_utterance(self) -> Optional[dict[str, Any]]:
+        """Return only the utterance currently being spoken (no grace window)."""
+        with self._utterance_lock:
+            if self._active_utterance is None:
+                return None
+            return dict(self._active_utterance)
+
+    def _on_tts_started(self) -> None:
+        with self._utterance_lock:
+            if self._pending_utterance is not None:
+                self._active_utterance = dict(self._pending_utterance)
+
+    def _on_tts_stopped(self) -> None:
+        with self._utterance_lock:
+            if self._active_utterance is not None:
+                self._last_completed_utterance = dict(self._active_utterance)
+                self._last_completed_at = time.monotonic()
+            self._active_utterance = None
+            self._pending_utterance = None
+
     def speak_text(self, text: str) -> None:
         """Inject text for immediate TTS synthesis through the Cartesia pipeline.
 
@@ -350,6 +493,30 @@ class VoiceCommandListener:
             pass
         except (AttributeError, OSError, TypeError, ValueError) as exc:
             logger.error(f"[TTS] speak_text error: {exc!r}")
+
+    def interrupt_tts(self) -> None:
+        """Interrupt current bot speech playback immediately (if active)."""
+        if not self.tts_enabled:
+            return
+        if not self._loop or not self._task:
+            return
+
+        async def _interrupt() -> None:
+            await self._task.queue_frame(InterruptionFrame())
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_interrupt(), self._loop)
+
+            def _on_done(done_future):
+                exc = done_future.exception()
+                if exc is not None:
+                    logger.error(f"[TTS] interrupt_tts failed: {exc!r}")
+
+            future.add_done_callback(_on_done)
+        except RuntimeError:
+            pass
+        except (AttributeError, OSError, TypeError, ValueError) as exc:
+            logger.error(f"[TTS] interrupt_tts error: {exc!r}")
 
     # ------------------------------------------------------------------
     # Internal
@@ -448,6 +615,11 @@ class VoiceCommandListener:
                 await self._daily_session.close()
             self._daily_transport = None
             self._daily_joined = False
+            with self._utterance_lock:
+                self._pending_utterance = None
+                self._active_utterance = None
+                self._last_completed_utterance = None
+                self._last_completed_at = 0.0
             with self._pending_daily_lock:
                 self._pending_daily_messages.clear()
 
@@ -528,6 +700,10 @@ class VoiceCommandListener:
                 api_key=self._cartesia_api_key,
                 voice_id=self._cartesia_voice_id,
             )
+            self._speech_watcher = SpeechCompletionWatcher(
+                on_started=self._on_tts_started,
+                on_stopped=self._on_tts_stopped,
+            )
 
         @transport.event_handler("on_joined")
         async def on_joined(_transport, _data):
@@ -551,4 +727,7 @@ class VoiceCommandListener:
             )
 
         if tts_active:
-            return Pipeline([transport.input(), stt, command_processor, tts, transport.output()])
+            return Pipeline(
+                [transport.input(), stt, command_processor, tts, self._speech_watcher, transport.output()]
+            )
+        return Pipeline([transport.input(), stt, command_processor])

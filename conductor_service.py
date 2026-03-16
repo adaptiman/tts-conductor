@@ -17,6 +17,7 @@ class CommandResult:
     output_lines: list[str] = field(default_factory=list)
     action: Optional[str] = None
     should_exit: bool = False
+    success: bool = True
 
 
 class ConductorService:
@@ -141,12 +142,13 @@ class ConductorService:
         if success:
             ellipsis = "..." if len(highlight) > 100 else ""
             return CommandResult(
+                success=True,
                 output_lines=[
                     "Highlight created successfully!",
                     f"Highlighted text: {highlight[:100]}{ellipsis}",
                 ]
             )
-        return CommandResult(output_lines=[f"Error creating highlight: {error}"])
+        return CommandResult(success=False, output_lines=[f"Error creating highlight: {error}"])
 
     def _execute_read_number(self, cmd: str) -> CommandResult:
         try:

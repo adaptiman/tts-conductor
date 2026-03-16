@@ -8,6 +8,7 @@ import threading
 import textwrap
 import time
 import tty
+from typing import cast
 
 from article_manager import ArticleManager
 from conductor_service import ConductorService
@@ -174,8 +175,20 @@ def handle_speak(manager):
         print("\n\n--- Exiting Speak Mode ---")
 
 
-def handle_speak_auto(manager, output, stop_event, delay_seconds=8):
+def handle_speak_auto(
+    manager,
+    output,
+    stop_event,
+    voice_listener=None,
+    sentence_state=None,
+    sentence_state_lock=None,
+    console_output=None,
+):
     """Voice-driven speak mode that advances sentences automatically.
+
+    When a voice_listener with TTS enabled is supplied, each sentence is spoken
+    through the Cartesia pipeline and this loop blocks until that utterance has
+    finished before advancing to the next sentence.
 
     This mode is intended for the voice command flow:
       - "read" starts it
@@ -190,26 +203,98 @@ def handle_speak_auto(manager, output, stop_event, delay_seconds=8):
     output.write_line(f"\n--- Entering Speak Mode ({len(sentences)} sentences) ---")
     output.write_line("Voice controls: say 'stop' to exit.\n")
 
-    line_width = int(os.getenv("SPEAK_LINE_WIDTH", "70"))
+    tts_active = voice_listener is not None and voice_listener.tts_enabled
+    local_output = console_output or output
+    sentence_total = len(sentences)
 
     try:
-        for sentence_index, sentence_text in enumerate(sentences, start=1):
+        sentence_offset = 0
+        while sentence_offset < sentence_total:
+            sentence_index = sentence_offset + 1
+            sentence_text = sentences[sentence_offset]
             if stop_event.is_set():
                 break
 
-            wrapped_text = textwrap.fill(sentence_text, width=line_width)
-            output.write_line(f"[{sentence_index}/{len(sentences)}]")
-            output.write_line(wrapped_text)
+            if tts_active and voice_listener is not None:
+                voice_listener.prepare_utterance_tracking(
+                    sentence_text,
+                    sentence_index=sentence_index,
+                    sentence_total=len(sentences),
+                )
+            elif sentence_state is not None and sentence_state_lock is not None:
+                with sentence_state_lock:
+                    sentence_state["active"] = True
+                    sentence_state["text"] = sentence_text
+                    sentence_state["index"] = sentence_index
+                    sentence_state["total"] = sentence_total
 
-            # Wait in short intervals so "stop" responds quickly.
-            for _ in range(delay_seconds * 10):
-                if stop_event.is_set():
-                    break
-                time.sleep(0.1)
+            if tts_active and voice_listener is not None:
+                voice_listener.reset_speech_done()
+                voice_listener.speak_text(sentence_text)
+
+                # Wait for THIS sentence to become the active utterance first.
+                # Only once it is actually being spoken do we mirror it to chat.
+                started = False
+                deadline = time.monotonic() + 60.0
+                while not stop_event.is_set():
+                    utterance = voice_listener.get_active_utterance()
+
+                    if not started:
+                        if utterance is not None and utterance.get("text") == sentence_text:
+                            started = True
+                            local_output.write_line(f"[{sentence_index}/{sentence_total}]")
+                            local_output.write_line(sentence_text)
+                            voice_listener.publish_app_message(
+                                {
+                                    "type": "console_line",
+                                    "text": f"[{sentence_index}/{sentence_total}]",
+                                }
+                            )
+                            voice_listener.publish_app_message(
+                                {
+                                    "type": "console_line",
+                                    "text": sentence_text,
+                                }
+                            )
+                    else:
+                        if utterance is None:
+                            break
+
+                    time.sleep(0.1)
+                    if time.monotonic() >= deadline:
+                        output.write_line("[tts] Speech wait timeout; advancing to next sentence.")
+                        break
+
+                should_repeat_current = False
+                if sentence_state is not None and sentence_state_lock is not None:
+                    with sentence_state_lock:
+                        should_repeat_current = bool(
+                            sentence_state.get("repeat_current", False)
+                        )
+                        sentence_state["repeat_current"] = False
+
+                if should_repeat_current:
+                    continue
+            else:
+                output.write_line(f"[{sentence_index}/{sentence_total}]")
+                output.write_line(sentence_text)
+                # Minimal fallback pacing if TTS is unavailable.
+                for _ in range(10):
+                    if stop_event.is_set():
+                        break
+                    time.sleep(0.1)
 
             if stop_event.is_set():
                 break
+
+            sentence_offset += 1
     finally:
+        if sentence_state is not None and sentence_state_lock is not None:
+            with sentence_state_lock:
+                sentence_state["active"] = False
+                sentence_state["text"] = None
+                sentence_state["index"] = 0
+                sentence_state["total"] = 0
         output.write_line("\n--- Exiting Speak Mode ---")
 
 
@@ -224,12 +309,14 @@ def print_audio_devices():
 
     print("Available audio devices:")
     for device in devices:
-        input_marker = "input" if device["max_input_channels"] > 0 else "-"
-        output_marker = "output" if device["max_output_channels"] > 0 else "-"
+        max_input_channels = cast(int, device["max_input_channels"])
+        max_output_channels = cast(int, device["max_output_channels"])
+        input_marker = "input" if max_input_channels > 0 else "-"
+        output_marker = "output" if max_output_channels > 0 else "-"
         print(
             f"{device['index']}: {device['name']} "
             f"[{input_marker}, {output_marker}] "
-            f"in={device['max_input_channels']} out={device['max_output_channels']}"
+            f"in={max_input_channels} out={max_output_channels}"
         )
 
 
@@ -248,7 +335,8 @@ def run_console(
                navigation commands can also be issued by speaking into the
                microphone.
     """
-    output = ConsoleOutputAdapter()
+    console_output = ConsoleOutputAdapter()
+    output = console_output
 
     output.write_line("Welcome to the Instapaper Console App!")
     output.write_line(
@@ -264,6 +352,14 @@ def run_console(
     speak_stop_event = threading.Event()
     speak_thread = None
     speak_state_lock = threading.Lock()
+    current_sentence_state = {
+        "active": False,
+        "text": None,
+        "index": 0,
+        "total": 0,
+        "repeat_current": False,
+    }
+    current_sentence_lock = threading.Lock()
 
     def _print_result(result):
         output.write_lines(result.output_lines)
@@ -284,7 +380,15 @@ def run_console(
         with speak_state_lock:
             speak_thread = threading.Thread(
                 target=handle_speak_auto,
-                args=(manager, output, speak_stop_event),
+                args=(
+                    manager,
+                    output,
+                    speak_stop_event,
+                    voice_listener,
+                    current_sentence_state,
+                    current_sentence_lock,
+                    console_output,
+                ),
                 daemon=True,
                 name="AutoSpeakMode",
             )
@@ -298,6 +402,36 @@ def run_console(
 
         if thread is not None and thread.is_alive():
             output.write_line("Stopping speak mode...")
+
+    def _highlight_current_utterance():
+        sentence_text = None
+        sentence_index = 0
+        sentence_total = 0
+
+        if voice_listener is not None and voice_listener.tts_enabled:
+            utterance = voice_listener.get_current_utterance()
+            if utterance is not None:
+                sentence_text = utterance.get("text")
+                sentence_index = int(utterance.get("index", 0))
+                sentence_total = int(utterance.get("total", 0))
+
+        if not sentence_text:
+            with current_sentence_lock:
+                sentence_text = current_sentence_state["text"]
+                sentence_index = current_sentence_state["index"]
+                sentence_total = current_sentence_state["total"]
+
+        if not sentence_text:
+            output.write_line("No active utterance to highlight.")
+            return
+
+        result = service.create_highlight_for_current(sentence_text)
+        # Write detailed result to console only — errors must not reach TTS.
+        console_output.write_lines(result.output_lines)
+        if result.success and sentence_index and sentence_total:
+            output.write_line(
+                f"[highlight] Captured utterance [{sentence_index}/{sentence_total}]."
+            )
 
     # ------------------------------------------------------------------
     # Optional voice command listener (pipecat)
@@ -321,6 +455,15 @@ def run_console(
                     output.write_prompt_hint()
                     return
 
+                if command == "highlight":
+                    if _is_speak_running() and voice_listener is not None and voice_listener.tts_enabled:
+                        with current_sentence_lock:
+                            current_sentence_state["repeat_current"] = True
+                        voice_listener.interrupt_tts()
+                    _highlight_current_utterance()
+                    output.write_prompt_hint()
+                    return
+
                 _print_result(service.execute_command(command))
                 output.write_prompt_hint()
 
@@ -334,7 +477,7 @@ def run_console(
             )
             output.write_line(
                 "[voice] Starting voice command listener "
-                f"(transport={voice_transport}; say 'next', 'previous', 'first', 'last', 'read', or 'stop')..."
+                f"(transport={voice_transport}; say 'next', 'previous', 'first', 'last', 'read', 'highlight', or 'stop')..."
             )
             voice_listener.start()
 
@@ -375,7 +518,10 @@ def run_console(
                 elif result.action == "star":
                     handle_star_bookmark(service, output)
                 elif result.action == "highlight":
-                    handle_create_highlight(service, output)
+                    if _is_speak_running():
+                        _highlight_current_utterance()
+                    else:
+                        handle_create_highlight(service, output)
                 elif result.action == "archive":
                     handle_archive_bookmark(service, output)
                 elif result.action == "speak":

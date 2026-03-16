@@ -121,8 +121,11 @@ class SpeakingOutputAdapter:
     def write_line(self, text: str = "") -> None:
         if not self._should_speak(text):
             return
+        spoken_text = " ".join(text.split())
+        if not spoken_text:
+            return
         try:
-            self._speak_fn(text.strip())
+            self._speak_fn(spoken_text)
         except (AttributeError, RuntimeError, OSError, ValueError):
             return
 
