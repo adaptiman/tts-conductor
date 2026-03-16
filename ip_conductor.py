@@ -179,6 +179,7 @@ def handle_speak_auto(
     manager,
     output,
     stop_event,
+    pause_event=None,
     voice_listener=None,
     sentence_state=None,
     sentence_state_lock=None,
@@ -210,6 +211,10 @@ def handle_speak_auto(
     try:
         sentence_offset = 0
         while sentence_offset < sentence_total:
+            if pause_event is not None and pause_event.is_set():
+                while pause_event.is_set() and not stop_event.is_set():
+                    time.sleep(0.1)
+
             sentence_index = sentence_offset + 1
             sentence_text = sentences[sentence_offset]
             if stop_event.is_set():
@@ -237,6 +242,9 @@ def handle_speak_auto(
                 started = False
                 deadline = time.monotonic() + 60.0
                 while not stop_event.is_set():
+                    if pause_event is not None and pause_event.is_set():
+                        break
+
                     utterance = voice_listener.get_active_utterance()
 
                     if not started:
@@ -295,6 +303,7 @@ def handle_speak_auto(
                 sentence_state["text"] = None
                 sentence_state["index"] = 0
                 sentence_state["total"] = 0
+                sentence_state["paused"] = False
         output.write_line("\n--- Exiting Speak Mode ---")
 
 
@@ -350,6 +359,7 @@ def run_console(
 
     service = ConductorService(manager)
     speak_stop_event = threading.Event()
+    speak_pause_event = threading.Event()
     speak_thread = None
     speak_state_lock = threading.Lock()
     current_sentence_state = {
@@ -358,6 +368,7 @@ def run_console(
         "index": 0,
         "total": 0,
         "repeat_current": False,
+        "paused": False,
     }
     current_sentence_lock = threading.Lock()
 
@@ -376,6 +387,7 @@ def run_console(
             return
 
         speak_stop_event.clear()
+        speak_pause_event.clear()
 
         with speak_state_lock:
             speak_thread = threading.Thread(
@@ -384,6 +396,7 @@ def run_console(
                     manager,
                     output,
                     speak_stop_event,
+                    speak_pause_event,
                     voice_listener,
                     current_sentence_state,
                     current_sentence_lock,
@@ -396,12 +409,42 @@ def run_console(
 
     def _stop_voice_speak_mode():
         speak_stop_event.set()
+        speak_pause_event.clear()
+
+        with current_sentence_lock:
+            current_sentence_state["paused"] = False
 
         with speak_state_lock:
             thread = speak_thread
 
         if thread is not None and thread.is_alive():
             output.write_line("Stopping speak mode...")
+
+    def _pause_voice_speak_mode():
+        if not _is_speak_running():
+            output.write_line("[voice] Speak mode is not active.")
+            return
+
+        speak_pause_event.set()
+        with current_sentence_lock:
+            current_sentence_state["paused"] = True
+            current_sentence_state["repeat_current"] = True
+
+        if voice_listener is not None and voice_listener.tts_enabled:
+            voice_listener.interrupt_tts()
+
+        output.write_line("[voice] Read mode paused.")
+
+    def _continue_voice_speak_mode():
+        if _is_speak_running():
+            speak_pause_event.clear()
+            with current_sentence_lock:
+                current_sentence_state["paused"] = False
+            output.write_line("[voice] Read mode resumed.")
+            return
+
+        output.write_line("[voice] Speak mode is not active; starting read mode.")
+        _start_voice_speak_mode()
 
     def _highlight_current_utterance():
         sentence_text = None
@@ -455,6 +498,21 @@ def run_console(
                     output.write_prompt_hint()
                     return
 
+                if command == "pause":
+                    _pause_voice_speak_mode()
+                    output.write_prompt_hint()
+                    return
+
+                if command == "continue":
+                    _continue_voice_speak_mode()
+                    output.write_prompt_hint()
+                    return
+
+                if command == "note":
+                    _begin_note_capture()
+                    output.write_prompt_hint()
+                    return
+
                 if command == "highlight":
                     if _is_speak_running() and voice_listener is not None and voice_listener.tts_enabled:
                         with current_sentence_lock:
@@ -477,7 +535,7 @@ def run_console(
             )
             output.write_line(
                 "[voice] Starting voice command listener "
-                f"(transport={voice_transport}; say 'next', 'previous', 'first', 'last', 'read', 'highlight', or 'stop')..."
+                f"(transport={voice_transport}; say 'next', 'previous', 'first', 'last', 'read', 'pause', 'continue', 'highlight', or 'stop')..."
             )
             voice_listener.start()
 

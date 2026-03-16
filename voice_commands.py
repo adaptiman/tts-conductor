@@ -69,6 +69,9 @@ _COMMAND_MAP: dict[str, str] = {
     "highlight": "highlight",
     "mark": "highlight",
     "read": "read",
+    "pause": "pause",
+    "continue": "continue",
+    "resume": "continue",
     "stop": "stop",
 }
 
@@ -269,6 +272,8 @@ class VoiceCommandListener:
         self._daily_joined = False
         self._pending_daily_messages: list[dict] = []
         self._pending_daily_lock = threading.Lock()
+        self._pending_tts_messages: list[str] = []
+        self._pending_tts_lock = threading.Lock()
         self._speech_watcher: Optional[SpeechCompletionWatcher] = None
         self._utterance_lock = threading.Lock()
         self._pending_utterance: Optional[dict[str, Any]] = None
@@ -474,6 +479,8 @@ class VoiceCommandListener:
         if not self._loop or not self._task:
             return
         if not self._daily_joined:
+            with self._pending_tts_lock:
+                self._pending_tts_messages.append(text)
             return
 
         async def _inject() -> None:
@@ -622,6 +629,8 @@ class VoiceCommandListener:
                 self._last_completed_at = 0.0
             with self._pending_daily_lock:
                 self._pending_daily_messages.clear()
+            with self._pending_tts_lock:
+                self._pending_tts_messages.clear()
 
     def _build_local_pipeline(self) -> Pipeline:
         """Build local mic + local Whisper pipeline."""
@@ -640,7 +649,9 @@ class VoiceCommandListener:
             device=self._device,
         )
 
-        command_processor = VoiceCommandProcessor(on_command=self._on_command)
+        command_processor = VoiceCommandProcessor(
+            on_command=self._on_command,
+        )
         # Keep the original working flow for command recognition.
         return Pipeline([transport.input(), stt, command_processor])
 
@@ -690,7 +701,9 @@ class VoiceCommandListener:
             api_key=self._deepgram_api_key,
         )
 
-        command_processor = VoiceCommandProcessor(on_command=self._on_command)
+        command_processor = VoiceCommandProcessor(
+            on_command=self._on_command,
+        )
 
         if tts_active:
             logger.info(
@@ -711,9 +724,16 @@ class VoiceCommandListener:
             with self._pending_daily_lock:
                 pending = list(self._pending_daily_messages)
                 self._pending_daily_messages.clear()
+            with self._pending_tts_lock:
+                pending_tts = list(self._pending_tts_messages)
+                self._pending_tts_messages.clear()
 
             for pending_payload in pending:
                 self.publish_app_message(pending_payload)
+
+            if self._task is not None:
+                for pending_text in pending_tts:
+                    await self._task.queue_frame(TTSSpeakFrame(text=pending_text))
 
         @transport.event_handler("on_left")
         async def on_left(_transport):
