@@ -478,7 +478,9 @@ class VoiceCommandListener:
             return
         if not self._loop or not self._task:
             return
-        if not self._daily_joined:
+        
+        # For Daily mode, buffer messages until we've joined the room.
+        if self._transport_mode == "daily" and not self._daily_joined:
             with self._pending_tts_lock:
                 self._pending_tts_messages.append(text)
             return
