@@ -61,11 +61,10 @@ from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransp
 # ---------------------------------------------------------------------------
 _COMMAND_MAP: dict[str, str] = {
     "next": "next",
-    "forward": "next",
     "previous": "prev",
-    "back": "prev",
     "first": "first",
     "last": "last",
+    "delete": "delete",
     "highlight": "highlight",
     "mark": "highlight",
     "read": "read",
@@ -74,6 +73,30 @@ _COMMAND_MAP: dict[str, str] = {
     "resume": "continue",
     "stop": "stop",
 }
+
+_NUMBER_WORDS: dict[str, int] = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+
+
+def _parse_step_count(token: str) -> Optional[int]:
+    """Parse an optional step count token used by back/forward commands."""
+    cleaned = token.strip().strip(".,!?")
+    if not cleaned:
+        return None
+    if cleaned.isdigit():
+        value = int(cleaned)
+        return value if value > 0 else None
+    return _NUMBER_WORDS.get(cleaned)
 
 
 def list_audio_devices() -> list[dict[str, object]]:
@@ -121,37 +144,83 @@ class VoiceCommandProcessor(FrameProcessor):
         self._on_command = on_command
         self._last_command_at = 0.0
         self._last_command: Optional[str] = None
+        self._last_interim_command_at = 0.0
+        self._last_interim_command: Optional[str] = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, (InterimTranscriptionFrame, TranscriptionFrame)):
+            is_interim = isinstance(frame, InterimTranscriptionFrame)
+            is_final = isinstance(frame, TranscriptionFrame)
             text = frame.text.strip().lower()
             logger.info(f"[VoiceCommands] Transcript: {text!r}")
 
+            def _emit(command: str) -> bool:
+                now = time.monotonic()
+                if command == self._last_command and now - self._last_command_at < 1.0:
+                    return False
+
+                # Interim transcripts often get followed by a final transcript
+                # for the same spoken utterance. Suppress that follow-up final.
+                if (
+                    is_final
+                    and self._last_interim_command == command
+                    and now - self._last_interim_command_at < 4.0
+                ):
+                    self._last_interim_command = None
+                    self._last_interim_command_at = 0.0
+                    return False
+
+                self._last_command_at = now
+                self._last_command = command
+                if is_interim:
+                    self._last_interim_command = command
+                    self._last_interim_command_at = now
+                elif is_final:
+                    self._last_interim_command = None
+                    self._last_interim_command_at = 0.0
+
+                logger.info(f"[VoiceCommands] Command detected: {command!r}")
+                try:
+                    self._on_command(command)
+                except Exception as exc:
+                    logger.error(f"[VoiceCommands] on_command raised: {exc}")
+                return True
+
             # Check each word in the transcript against the command map.
-            words = text.split()
-            for word in words:
-                # Strip common punctuation that Whisper sometimes appends.
-                word = word.strip(".,!?")
-                if word in _COMMAND_MAP:
-                    command = _COMMAND_MAP[word]
-                    now = time.monotonic()
-                    # Debounce only repeated identical commands; allow a
-                    # different command immediately after the previous one.
-                    if (
-                        command == self._last_command
-                        and now - self._last_command_at < 1.0
-                    ):
-                        break
-                    self._last_command_at = now
-                    self._last_command = command
-                    logger.info(f"[VoiceCommands] Command detected: {command!r}")
-                    try:
-                        self._on_command(command)
-                    except Exception as exc:
-                        logger.error(f"[VoiceCommands] on_command raised: {exc}")
-                    break  # Only fire one command per utterance
+            words = [w.strip(".,!?") for w in text.split() if w.strip(".,!?")]
+
+            command_emitted = False
+
+            # Sentence-level reading controls with optional numeric count.
+            # Examples: "back 3", "forward two", "repeat", "repeat that".
+            for index, word in enumerate(words):
+                if word == "delete":
+                    command_emitted = _emit("delete")
+                    break
+
+                if word in ("back", "forward"):
+                    step = 1
+                    if index + 1 < len(words):
+                        parsed = _parse_step_count(words[index + 1])
+                        if parsed is not None:
+                            step = parsed
+                    command = f"{word} {step}" if step != 1 else word
+                    command_emitted = _emit(command)
+                    break
+
+                if word == "repeat":
+                    command_emitted = _emit("repeat")
+                    break
+
+            if not command_emitted:
+                for word in words:
+                    # Strip common punctuation that Whisper sometimes appends.
+                    if word in _COMMAND_MAP:
+                        command = _COMMAND_MAP[word]
+                        _emit(command)
+                        break  # Only fire one command per utterance
 
         await self.push_frame(frame, direction)
 
@@ -478,7 +547,7 @@ class VoiceCommandListener:
             return
         if not self._loop or not self._task:
             return
-        
+
         # For Daily mode, buffer messages until we've joined the room.
         if self._transport_mode == "daily" and not self._daily_joined:
             with self._pending_tts_lock:
@@ -489,6 +558,16 @@ class VoiceCommandListener:
             await self._task.queue_frame(TTSSpeakFrame(text=text))
 
         try:
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+
+            # If already on the pipeline loop thread, schedule directly.
+            if running_loop is self._loop:
+                self._loop.create_task(_inject())
+                return
+
             future = asyncio.run_coroutine_threadsafe(_inject(), self._loop)
 
             def _on_done(done_future):
@@ -514,6 +593,16 @@ class VoiceCommandListener:
             await self._task.queue_frame(InterruptionFrame())
 
         try:
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+
+            # If already on the pipeline loop thread, schedule directly.
+            if running_loop is self._loop:
+                self._loop.create_task(_interrupt())
+                return
+
             future = asyncio.run_coroutine_threadsafe(_interrupt(), self._loop)
 
             def _on_done(done_future):

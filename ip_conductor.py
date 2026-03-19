@@ -8,6 +8,7 @@ import threading
 import textwrap
 import time
 import tty
+import unicodedata
 from typing import cast
 
 from article_manager import ArticleManager
@@ -19,6 +20,21 @@ from output_adapter import (
     DailyMessageOutputAdapter,
     SpeakingOutputAdapter,
 )
+
+
+def _sanitize_tts_text(text: str) -> str:
+    """Remove control/format characters that can break TTS providers."""
+    cleaned_chars = []
+    for ch in text:
+        category = unicodedata.category(ch)
+        # Drop control + format characters (e.g. zero-width and soft markers).
+        if category in {"Cc", "Cf", "Cs"}:
+            continue
+        cleaned_chars.append(ch)
+
+    cleaned = "".join(cleaned_chars)
+    cleaned = " ".join(cleaned.split())
+    return cleaned.strip()
 
 
 def _maybe_reexec_in_project_venv():
@@ -195,17 +211,35 @@ def handle_speak_auto(
       - "read" starts it
       - "stop" exits it
     """
-    output.write_line("Parsing article into sentences...")
-    sentences = manager.parse_current_article_sentences()
-    if not sentences:
-        output.write_line("No article content available to speak.")
-        return
-
-    output.write_line(f"\n--- Entering Speak Mode ({len(sentences)} sentences) ---")
-    output.write_line("Voice controls: say 'stop' to exit.\n")
-
     tts_active = voice_listener is not None and voice_listener.tts_enabled
     local_output = console_output or output
+
+    def _write_status_line(text: str) -> None:
+        # Route status text to the local console path to avoid racey overlap
+        # with sentence-tracking utterances, while still mirroring to Daily.
+        local_output.write_line(text)
+        if (
+            local_output is not output
+            and voice_listener is not None
+            and voice_listener.tts_enabled
+        ):
+            voice_listener.publish_app_message({"type": "console_line", "text": text})
+
+    _write_status_line("Parsing article into sentences...")
+    sentences = manager.parse_current_article_sentences()
+    if not sentences:
+        _write_status_line("No article content available to speak.")
+        return
+
+    _write_status_line(f"\n--- Entering Speak Mode ({len(sentences)} sentences) ---")
+    controls_line = "Voice controls: say 'stop' to exit."
+    _write_status_line(f"{controls_line}\n")
+    if tts_active and voice_listener is not None:
+        # Speak and wait once so read-mode guidance isn't skipped.
+        voice_listener.reset_speech_done()
+        voice_listener.speak_text(_sanitize_tts_text(controls_line))
+        voice_listener.wait_for_speech_done(timeout=3.0)
+
     sentence_total = len(sentences)
 
     try:
@@ -217,6 +251,7 @@ def handle_speak_auto(
 
             sentence_index = sentence_offset + 1
             sentence_text = sentences[sentence_offset]
+            tts_sentence_text = _sanitize_tts_text(sentence_text)
             if stop_event.is_set():
                 break
 
@@ -235,7 +270,14 @@ def handle_speak_auto(
 
             if tts_active and voice_listener is not None:
                 voice_listener.reset_speech_done()
-                voice_listener.speak_text(sentence_text)
+                if not tts_sentence_text:
+                    output.write_line(
+                        f"[tts] Skipping unsupported sentence [{sentence_index}/{sentence_total}]."
+                    )
+                    sentence_offset += 1
+                    continue
+
+                voice_listener.speak_text(tts_sentence_text)
 
                 # Wait for THIS sentence to become the active utterance first.
                 # Only once it is actually being spoken do we mirror it to chat.
@@ -274,14 +316,21 @@ def handle_speak_auto(
                         break
 
                 should_repeat_current = False
+                seek_delta = 0
                 if sentence_state is not None and sentence_state_lock is not None:
                     with sentence_state_lock:
                         should_repeat_current = bool(
                             sentence_state.get("repeat_current", False)
                         )
                         sentence_state["repeat_current"] = False
+                        seek_delta = int(sentence_state.get("seek_delta", 0) or 0)
+                        sentence_state["seek_delta"] = 0
 
                 if should_repeat_current:
+                    continue
+
+                if seek_delta != 0:
+                    sentence_offset = max(0, min(sentence_total - 1, sentence_offset + seek_delta))
                     continue
             else:
                 output.write_line(f"[{sentence_index}/{sentence_total}]")
@@ -303,6 +352,7 @@ def handle_speak_auto(
                 sentence_state["text"] = None
                 sentence_state["index"] = 0
                 sentence_state["total"] = 0
+                sentence_state["seek_delta"] = 0
                 sentence_state["paused"] = False
         output.write_line("\n--- Exiting Speak Mode ---")
 
@@ -368,6 +418,7 @@ def run_console(
         "index": 0,
         "total": 0,
         "repeat_current": False,
+        "seek_delta": 0,
         "paused": False,
     }
     current_sentence_lock = threading.Lock()
@@ -408,6 +459,7 @@ def run_console(
             speak_thread.start()
 
     def _stop_voice_speak_mode():
+        nonlocal speak_thread
         speak_stop_event.set()
         speak_pause_event.clear()
 
@@ -419,6 +471,37 @@ def run_console(
 
         if thread is not None and thread.is_alive():
             output.write_line("Stopping speak mode...")
+            thread.join(timeout=2)
+
+        with speak_state_lock:
+            if speak_thread is not None and not speak_thread.is_alive():
+                speak_thread = None
+
+    def _is_navigation_mode_command_input(command: str) -> bool:
+        lower = command.strip().lower()
+        if not lower:
+            return False
+
+        if lower in {
+            "next",
+            "n",
+            "previous",
+            "prev",
+            "p",
+            "first",
+            "last",
+            "title",
+            "delete",
+            "d",
+        }:
+            return True
+
+        # Numeric jump command (<number>) navigates the bookmark list.
+        try:
+            int(lower)
+            return True
+        except ValueError:
+            return False
 
     def _pause_voice_speak_mode():
         if not _is_speak_running():
@@ -446,12 +529,134 @@ def run_console(
         output.write_line("[voice] Speak mode is not active; starting read mode.")
         _start_voice_speak_mode()
 
-    def _highlight_current_utterance():
+    def _request_sentence_seek(delta: int) -> bool:
+        if not _is_speak_running():
+            return False
+        if delta == 0:
+            return True
+
+        speak_pause_event.clear()
+        with current_sentence_lock:
+            current_sentence_state["paused"] = False
+            current_sentence_state["repeat_current"] = False
+            current_sentence_state["seek_delta"] = int(delta)
+        return True
+
+    def _request_sentence_repeat() -> bool:
+        if not _is_speak_running():
+            return False
+
+        speak_pause_event.clear()
+        with current_sentence_lock:
+            current_sentence_state["paused"] = False
+            current_sentence_state["seek_delta"] = 0
+            current_sentence_state["repeat_current"] = True
+        return True
+
+    def _parse_step_command(command: str, prefix: str) -> int:
+        """Parse commands like 'back', 'back 3', 'forward two'."""
+        lower = command.strip().lower()
+        if lower == prefix:
+            return 1
+
+        parts = lower.split(maxsplit=1)
+        if len(parts) == 1:
+            return 1
+
+        raw_value = parts[1].strip().strip(".,!?")
+        if not raw_value:
+            return 1
+
+        if raw_value.isdigit():
+            parsed = int(raw_value)
+            return parsed if parsed > 0 else 1
+
+        number_words = {
+            "one": 1,
+            "two": 2,
+            "three": 3,
+            "four": 4,
+            "five": 5,
+            "six": 6,
+            "seven": 7,
+            "eight": 8,
+            "nine": 9,
+            "ten": 10,
+        }
+        return number_words.get(raw_value, 1)
+
+    def _handle_speak_sentence_command(command: str) -> bool:
+        lower = command.strip().lower()
+
+        if lower.startswith("back"):
+            steps = _parse_step_command(lower, "back")
+            if _is_speak_running():
+                requested_delta = -steps
+                actual_delta = requested_delta
+                with current_sentence_lock:
+                    current_index = int(current_sentence_state.get("index", 0) or 0)
+                    total = int(current_sentence_state.get("total", 0) or 0)
+
+                if current_index > 0 and total > 0:
+                    target = max(1, min(total, current_index + requested_delta))
+                    actual_delta = target - current_index
+
+                if actual_delta == 0:
+                    output.write_line("[voice] Already at the first sentence.")
+                    return True
+
+                _request_sentence_seek(actual_delta)
+                output.write_line(f"[voice] Back {abs(actual_delta)} sentence(s).")
+                return True
+
+            # Outside speak mode, preserve bookmark navigation semantics.
+            _print_result(service.execute_command("prev"))
+            return True
+
+        if lower.startswith("forward"):
+            steps = _parse_step_command(lower, "forward")
+            if _is_speak_running():
+                requested_delta = steps
+                actual_delta = requested_delta
+                with current_sentence_lock:
+                    current_index = int(current_sentence_state.get("index", 0) or 0)
+                    total = int(current_sentence_state.get("total", 0) or 0)
+
+                if current_index > 0 and total > 0:
+                    target = max(1, min(total, current_index + requested_delta))
+                    actual_delta = target - current_index
+
+                if actual_delta == 0:
+                    output.write_line("[voice] Already at the last sentence.")
+                    return True
+
+                _request_sentence_seek(actual_delta)
+                output.write_line(f"[voice] Forward {abs(actual_delta)} sentence(s).")
+                return True
+
+            # Outside speak mode, preserve bookmark navigation semantics.
+            _print_result(service.execute_command("next"))
+            return True
+
+        if lower in ("repeat", "repeat that"):
+            if _request_sentence_repeat():
+                output.write_line("[voice] Repeating current sentence.")
+                return True
+            output.write_line("[voice] Speak mode is not active.")
+            return True
+
+        return False
+
+    def _highlight_current_utterance(captured_utterance=None):
         sentence_text = None
         sentence_index = 0
         sentence_total = 0
 
-        if voice_listener is not None and voice_listener.tts_enabled:
+        if captured_utterance is not None:
+            sentence_text = captured_utterance.get("text")
+            sentence_index = int(captured_utterance.get("index", 0))
+            sentence_total = int(captured_utterance.get("total", 0))
+        elif voice_listener is not None and voice_listener.tts_enabled:
             utterance = voice_listener.get_current_utterance()
             if utterance is not None:
                 sentence_text = utterance.get("text")
@@ -471,10 +676,29 @@ def run_console(
         result = service.create_highlight_for_current(sentence_text)
         # Write detailed result to console only — errors must not reach TTS.
         console_output.write_lines(result.output_lines)
-        if result.success and sentence_index and sentence_total:
-            output.write_line(
-                f"[highlight] Captured utterance [{sentence_index}/{sentence_total}]."
-            )
+        if result.success:
+            output.write_line("Highlight created.")
+            if sentence_index and sentence_total:
+                console_output.write_line(
+                    f"[highlight] Captured utterance [{sentence_index}/{sentence_total}]."
+                )
+        else:
+            output.write_line("Could not create highlight.")
+
+    def _handle_voice_delete() -> None:
+        result = service.delete_current_bookmark()
+        # Keep detailed lines in console log.
+        console_output.write_lines(result.output_lines)
+
+        if result.success:
+            # "Article deleted." then the new current title as two separate TTS utterances.
+            output.write_line("Article deleted.")
+            if len(result.output_lines) >= 2:
+                # output_lines[0] = "'title' deleted."
+                # output_lines[1..] = new current title lines
+                output.write_line(result.output_lines[-1])
+        else:
+            output.write_line(result.output_lines[0] if result.output_lines else "Delete failed.")
 
     # ------------------------------------------------------------------
     # Optional voice command listener (pipecat)
@@ -487,6 +711,27 @@ def run_console(
             def _on_voice_command(command: str) -> None:
                 """Called from the pipecat background thread on voice detection."""
                 output.write_line(f"\n[voice] {command}")
+
+                if (
+                    command != "highlight"
+                    and _is_speak_running()
+                    and voice_listener is not None
+                    and voice_listener.tts_enabled
+                ):
+                    # Commands in speak mode should stop the current utterance immediately.
+                    voice_listener.interrupt_tts()
+
+                if _handle_speak_sentence_command(command):
+                    output.write_prompt_hint()
+                    return
+
+                if _is_speak_running() and _is_navigation_mode_command_input(command):
+                    _stop_voice_speak_mode()
+
+                if command == "delete":
+                    _handle_voice_delete()
+                    output.write_prompt_hint()
+                    return
 
                 if command == "read":
                     _start_voice_speak_mode()
@@ -508,17 +753,14 @@ def run_console(
                     output.write_prompt_hint()
                     return
 
-                if command == "note":
-                    _begin_note_capture()
-                    output.write_prompt_hint()
-                    return
-
                 if command == "highlight":
+                    captured_utterance = None
                     if _is_speak_running() and voice_listener is not None and voice_listener.tts_enabled:
+                        captured_utterance = voice_listener.get_current_utterance()
                         with current_sentence_lock:
                             current_sentence_state["repeat_current"] = True
                         voice_listener.interrupt_tts()
-                    _highlight_current_utterance()
+                    _highlight_current_utterance(captured_utterance)
                     output.write_prompt_hint()
                     return
 
@@ -535,7 +777,7 @@ def run_console(
             )
             output.write_line(
                 "[voice] Starting voice command listener "
-                f"(transport={voice_transport}; say 'next', 'previous', 'first', 'last', 'read', 'pause', 'continue', 'highlight', or 'stop')..."
+                f"(transport={voice_transport}; say 'next', 'previous', 'back <#>', 'forward <#>', 'repeat', 'delete', 'first', 'last', 'read', 'pause', 'continue', 'highlight', or 'stop')..."
             )
             voice_listener.start()
 
@@ -560,13 +802,37 @@ def run_console(
             output.write_line(f"[voice] Could not start voice listener: {exc}")
             voice_listener = None
 
-    # Display the current bookmark title at startup
-    _print_result(service.execute_command("title"))
+    # Display the current bookmark title at startup.
+    startup_title_result = service.execute_command("title")
+    title_tts_listener = (
+        voice_listener is not None
+        and voice_listener.tts_enabled
+        and bool(startup_title_result.output_lines)
+    )
+    if title_tts_listener and voice_listener is not None:
+        voice_listener.reset_speech_done()
+
+    _print_result(startup_title_result)
+
+    if title_tts_listener and voice_listener is not None:
+        voice_listener.wait_for_speech_done(timeout=3.0)
 
     try:
         while True:
             try:
                 cmd = input("> ").strip()
+
+                if _is_speak_running() and voice_listener is not None and voice_listener.tts_enabled and cmd:
+                    # Typed commands should also interrupt current utterance immediately.
+                    voice_listener.interrupt_tts()
+
+                if _handle_speak_sentence_command(cmd):
+                    output.write_prompt_hint()
+                    continue
+
+                if _is_speak_running() and _is_navigation_mode_command_input(cmd):
+                    _stop_voice_speak_mode()
+
                 result = service.execute_command(cmd)
 
                 if result.action == "add":
