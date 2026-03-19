@@ -198,6 +198,10 @@ class ArticleManager:
 
             highlight_text = highlight_text.strip()
 
+            requested_position = None
+            if isinstance(position, int) and position >= 0:
+                requested_position = position
+
             # Instapaper can be strict about exact text/position matching.
             # Try a small set of variants and prefer position-aware requests
             # when we can locate the text in the article body.
@@ -210,6 +214,12 @@ class ArticleManager:
             last_error = None
             for candidate in candidates:
                 try:
+                    if requested_position is not None and article_text:
+                        candidate_end = requested_position + len(candidate)
+                        if article_text[requested_position:candidate_end] == candidate:
+                            m.create_highlight(candidate, position=requested_position)
+                            return (True, title, candidate, None)
+
                     if article_text:
                         found_at = article_text.find(candidate)
                         if found_at >= 0:
@@ -219,7 +229,7 @@ class ArticleManager:
                     # Fallback if no exact position match was found.
                     m.create_highlight(candidate)
                     return (True, title, candidate, None)
-                except Exception as e:
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                     last_error = str(e)
                     continue
 

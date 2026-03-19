@@ -69,6 +69,24 @@ This design allows you to easily integrate Instapaper functionality into other P
 
    This controls how text wraps in speak mode. Adjust based on your terminal width and reading preference.
 
+4. (Optional) Configure voice command + TTS services:
+   ```bash
+   DAILY_ROOM_URL=https://your-domain.daily.co/your-room
+   DAILY_TOKEN=your_daily_token
+   DEEPGRAM_API_KEY=your_deepgram_api_key
+
+   # Select default TTS vendor for Daily mode
+   IP_CONDUCTOR_TTS_VENDOR=cartesia  # or elevenlabs
+
+   # Cartesia
+   CARTESIA_API_KEY=your_cartesia_api_key
+   CARTESIA_VOICE_ID=your_cartesia_voice_id
+
+   # ElevenLabs
+   ELEVENLABS_API_KEY=your_elevenlabs_api_key
+   ELEVENLABS_VOICE_ID=your_elevenlabs_voice_id
+   ```
+
 **Note**: Never commit your `.env` file to version control. It's already included in `.gitignore`.
 
 ## Usage
@@ -83,12 +101,33 @@ Run the application:
 python ip_conductor.py
 ```
 
+List microphone devices (useful for local voice mode setup):
+```bash
+python ip_conductor.py --list-audio-devices
+```
+
+Run with voice commands using local microphone + local Whisper:
+```bash
+python ip_conductor.py --voice --voice-transport local
+```
+
+Run with voice commands + Daily transport and pick a TTS vendor for this session:
+```bash
+python ip_conductor.py --voice --voice-transport daily --tts-vendor cartesia
+python ip_conductor.py --voice --voice-transport daily --tts-vendor elevenlabs
+```
+
+Optional Daily viewer page:
+
+- Open `web/daily_console_viewer.html` in a browser.
+- Enter the same Daily room URL/token to view mirrored console lines and hear room audio.
+
 ### Available Commands
 
 #### Article Management
 - `articles` / `bookmarks` / `a` - List all articles with numbers (up to 25 by default)
 - `add` - Add a new article by entering a URL
-- `delete` / `d` - Delete the currently selected article (with confirmation)
+- `delete` / `d` - Delete the currently selected article
 - `star` / `s` - Star the currently selected article
 - `archive` / `c` - Archive the currently selected article
 - `highlight` - Create a highlight for the current article (multi-line text input)
@@ -108,6 +147,19 @@ python ip_conductor.py
 #### System
 - `exit` - Quit the application
 
+### Voice Commands (When `--voice` Is Enabled)
+
+The following spoken commands are available:
+
+- `next`, `previous`, `first`, `last` - Bookmark navigation
+- `delete`, `archive` - Apply to current article
+- `read` - Start voice read mode
+- `pause`, `continue`, `stop` - Read-mode control
+- `highlight` / `mark` - Highlight the current spoken sentence
+- `back`, `back <number>` - Jump backward by sentence in read mode
+- `forward`, `forward <number>` - Jump forward by sentence in read mode
+- `repeat` - Replay the current sentence in read mode
+
 ### Keyboard Shortcuts
 
 For faster navigation, single-letter shortcuts are available for common commands:
@@ -124,7 +176,7 @@ For faster navigation, single-letter shortcuts are available for common commands
 - `r 3` - Read article 3
 - `k 5` - Speak article 5
 
-### Speak Mode
+### Speak Mode (Keyboard)
 
 Speak mode provides an interactive sentence-by-sentence reading experience with intelligent sentence parsing powered by spaCy:
 
@@ -143,6 +195,16 @@ Sentence text appears here.
 
 When you highlight a sentence with **H**, a confirmation message appears, and you can continue navigating with SPACE or B.
 
+### Read Mode (Voice)
+
+When voice mode is enabled (`--voice`), say `read` to start continuous sentence playback.
+
+- Say `stop` to exit read mode
+- Say `pause` / `continue` to pause and resume
+- Say `back`, `forward`, or `repeat` for sentence-level control
+- Say `highlight` / `mark` to save the current sentence as a highlight
+- Say `delete` or `archive` to apply article-level actions
+
 ### Features
 
 - **Environment-based configuration**: Secure credential storage using `.env` files
@@ -155,7 +217,7 @@ When you highlight a sentence with **H**, a confirmation message appears, and yo
 - **Configurable article limit**: The application fetches 25 articles by default (configurable in `ArticleManager` initialization)
 - **Error handling**: Comprehensive error handling for network issues, API errors, and invalid operations
 - **Interactive highlights**: Create multi-line highlights by entering text and pressing Enter twice to finish
-- **Confirmation prompts**: Safe deletion with confirmation prompts
+- **Voice-enabled read mode**: Optional spoken controls for read, pause, continue, highlight, delete, and archive
 
 ### Example Workflow
 
@@ -187,7 +249,7 @@ Web Development Best Practices
 
 # Enter speak mode for sentence-by-sentence reading using shortcut
 > k
-[1/350] [0,45]
+[1/350]
 Docker is a platform for developing applications.
 # Press SPACE to see next sentence
 # Press H to highlight current sentence
@@ -228,6 +290,14 @@ that I want to remember.
 - `spacy==3.8.11` - Natural language processing for sentence parsing
 - `en-core-web-sm` - English language model for spaCy (downloaded separately)
 - `setuptools==80.9.0` - Python package utilities (required for Python 3.12+)
+
+### Voice + Realtime Dependencies
+- `pipecat-ai[local,whisper,websockets-base,elevenlabs]==0.0.105` - Voice pipelines (Whisper STT, Daily transport, Cartesia/ElevenLabs TTS)
+- `daily-python==0.24.0` - Daily WebRTC transport
+- `deepgram-sdk==6.0.1` - Deepgram speech-to-text for Daily mode
+- `pyaudio==0.2.14` - Local microphone input
+- `aiohttp==3.13.3` - Async HTTP client used by voice transport services
+- `loguru==0.7.3` - Structured runtime logging
 
 ### Development and Code Quality Tools
 - `black==25.11.0` - Code formatter for consistent Python code style

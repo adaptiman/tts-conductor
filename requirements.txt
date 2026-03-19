@@ -1,3 +1,4 @@
+aiohttp==3.13.3
 annotated-types==0.7.0
 blis==1.3.3
 catalogue==2.0.10
@@ -17,11 +18,13 @@ murmurhash==1.0.15
 numpy==2.3.5
 oauth2==1.9.0.post1
 packaging==25.0
+pyaudio==0.2.14
 preshed==3.0.12
 pydantic==2.12.4
 pydantic_core==2.41.5
 pyparsing==3.2.5
 python-dotenv==1.2.1
+loguru==0.7.3
 requests==2.32.5
 setuptools==80.9.0
 smart_open==7.5.0
@@ -39,10 +42,9 @@ wasabi==1.1.3
 weasel==0.4.3
 wrapt==2.0.1
 
-# Development and linting tools
 # Voice command support (STT via pipecat + faster-whisper)
 # System requirement: portaudio19-dev  (sudo apt install portaudio19-dev)
-pipecat-ai[local,whisper,websockets-base]==0.0.105
+pipecat-ai[local,whisper,websockets-base,elevenlabs]==0.0.105
 websockets==15.0.1
 
 # Remote voice transport (Daily WebRTC + Deepgram STT)

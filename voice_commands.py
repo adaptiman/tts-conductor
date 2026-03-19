@@ -65,6 +65,7 @@ _COMMAND_MAP: dict[str, str] = {
     "first": "first",
     "last": "last",
     "delete": "delete",
+    "archive": "archive",
     "highlight": "highlight",
     "mark": "highlight",
     "read": "read",
@@ -207,7 +208,7 @@ class VoiceCommandProcessor(FrameProcessor):
                 logger.info(f"[VoiceCommands] Command detected: {command!r}")
                 try:
                     self._on_command(command)
-                except Exception as exc:
+                except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
                     logger.error(f"[VoiceCommands] on_command raised: {exc}")
                 return True
 
@@ -339,19 +340,27 @@ class VoiceCommandListener:
         daily_token: Optional[str] = None,
         daily_api_key: Optional[str] = None,
         deepgram_api_key: Optional[str] = None,
+        tts_vendor: str = "cartesia",
         cartesia_api_key: Optional[str] = None,
         cartesia_voice_id: Optional[str] = None,
+        elevenlabs_api_key: Optional[str] = None,
+        elevenlabs_voice_id: Optional[str] = None,
     ):
         self._on_command = on_command
         self._model = model
         self._device = device
         self._transport_mode = transport_mode.lower()
+        self._tts_vendor = (tts_vendor or "cartesia").strip().lower()
+        if self._tts_vendor not in {"cartesia", "elevenlabs"}:
+            raise RuntimeError("Unsupported TTS vendor. Use 'cartesia' or 'elevenlabs'.")
         self._daily_room_url = daily_room_url
         self._daily_token = daily_token
         self._daily_api_key = daily_api_key or os.getenv("DAILY_API_KEY")
         self._deepgram_api_key = deepgram_api_key or os.getenv("DEEPGRAM_API_KEY")
         self._cartesia_api_key = cartesia_api_key or os.getenv("CARTESIA_API_KEY")
         self._cartesia_voice_id = cartesia_voice_id or os.getenv("CARTESIA_VOICE_ID")
+        self._elevenlabs_api_key = elevenlabs_api_key or os.getenv("ELEVENLABS_API_KEY")
+        self._elevenlabs_voice_id = elevenlabs_voice_id or os.getenv("ELEVENLABS_VOICE_ID")
 
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -480,13 +489,19 @@ class VoiceCommandListener:
             logger.error(f"[VoiceCommands] Failed to publish Daily app message: {exc!r}")
 
     @property
+    def tts_vendor(self) -> str:
+        """Selected TTS vendor for this listener session."""
+        return self._tts_vendor
+
+    def _is_tts_vendor_configured(self) -> bool:
+        if self._tts_vendor == "elevenlabs":
+            return bool(self._elevenlabs_api_key and self._elevenlabs_voice_id)
+        return bool(self._cartesia_api_key and self._cartesia_voice_id)
+
+    @property
     def tts_enabled(self) -> bool:
-        """True when Cartesia TTS is configured and the transport mode is Daily."""
-        return (
-            self._transport_mode == "daily"
-            and bool(self._cartesia_api_key)
-            and bool(self._cartesia_voice_id)
-        )
+        """True when selected vendor TTS is configured in Daily transport mode."""
+        return self._transport_mode == "daily" and self._is_tts_vendor_configured()
 
     def reset_speech_done(self) -> None:
         """Clear the speech-completion signal before queuing a new utterance."""
@@ -557,11 +572,11 @@ class VoiceCommandListener:
             self._pending_utterance = None
 
     def speak_text(self, text: str) -> None:
-        """Inject text for immediate TTS synthesis through the Cartesia pipeline.
+        """Inject text for immediate TTS synthesis through the configured pipeline.
 
         The text is wrapped in a :class:`TTSSpeakFrame` and queued DOWNSTREAM
-        into the running pipeline where CartesiaTTSService will convert it to
-        audio and DailyTransport will broadcast it to room participants.
+        into the running pipeline where the selected TTS service will convert
+        it to audio and DailyTransport will broadcast it to room participants.
 
         This method is thread-safe and non-blocking; it schedules the injection
         onto the pipeline's asyncio event loop and returns immediately.
@@ -793,7 +808,7 @@ class VoiceCommandListener:
 
         print(f"[voice] Daily room: {room_url}")
 
-        tts_active = bool(self._cartesia_api_key and self._cartesia_voice_id)
+        tts_active = self._is_tts_vendor_configured()
 
         transport = DailyTransport(
             room_url,
@@ -820,13 +835,29 @@ class VoiceCommandListener:
         )
 
         if tts_active:
-            logger.info(
-                f"[TTS] Cartesia TTS enabled (voice={self._cartesia_voice_id!r})"
-            )
-            tts = CartesiaTTSService(
-                api_key=self._cartesia_api_key,
-                voice_id=self._cartesia_voice_id,
-            )
+            if self._tts_vendor == "elevenlabs":
+                logger.info(
+                    f"[TTS] ElevenLabs TTS enabled (voice={self._elevenlabs_voice_id!r})"
+                )
+                try:
+                    from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
+                except Exception as exc:
+                    raise RuntimeError(
+                        "ElevenLabs TTS is unavailable. Install pipecat-ai[elevenlabs] and ensure ElevenLabs dependencies are present."
+                    ) from exc
+
+                tts = ElevenLabsTTSService(
+                    api_key=cast(str, self._elevenlabs_api_key),
+                    voice_id=cast(str, self._elevenlabs_voice_id),
+                )
+            else:
+                logger.info(
+                    f"[TTS] Cartesia TTS enabled (voice={self._cartesia_voice_id!r})"
+                )
+                tts = CartesiaTTSService(
+                    api_key=self._cartesia_api_key,
+                    voice_id=self._cartesia_voice_id,
+                )
             self._speech_watcher = SpeechCompletionWatcher(
                 on_started=self._on_tts_started,
                 on_stopped=self._on_tts_stopped,

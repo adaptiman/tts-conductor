@@ -45,7 +45,7 @@ If you're experiencing automatic changes to files after committing (especially w
 
 ### 3. Manual Control
 - Use `./lint.sh` for intentional formatting
-- Use `./format-modified.sh` for changed files only
+- Or run `black` / `isort` manually on specific files when needed
 
 ## Testing the Fix
 

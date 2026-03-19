@@ -204,8 +204,8 @@ def handle_speak_auto(
     """Voice-driven speak mode that advances sentences automatically.
 
     When a voice_listener with TTS enabled is supplied, each sentence is spoken
-    through the Cartesia pipeline and this loop blocks until that utterance has
-    finished before advancing to the next sentence.
+    through the configured TTS pipeline and this loop blocks until that
+    utterance has finished before advancing to the next sentence.
 
     This mode is intended for the voice command flow:
       - "read" starts it
@@ -385,6 +385,7 @@ def run_console(
     voice_transport="local",
     daily_room_url=None,
     daily_token=None,
+    tts_vendor="cartesia",
 ):
     """Main console interface.
 
@@ -493,6 +494,8 @@ def run_console(
             "title",
             "delete",
             "d",
+            "archive",
+            "c",
         }:
             return True
 
@@ -700,6 +703,19 @@ def run_console(
         else:
             output.write_line(result.output_lines[0] if result.output_lines else "Delete failed.")
 
+    def _handle_voice_archive() -> None:
+        result = service.archive_current_bookmark()
+        # Keep detailed lines in console log.
+        console_output.write_lines(result.output_lines)
+
+        if result.success:
+            output.write_line("Article archived.")
+            title_result = service.execute_command("title")
+            if title_result.output_lines:
+                output.write_line(title_result.output_lines[-1])
+        else:
+            output.write_line(result.output_lines[0] if result.output_lines else "Archive failed.")
+
     # ------------------------------------------------------------------
     # Optional voice command listener (pipecat)
     # ------------------------------------------------------------------
@@ -730,6 +746,11 @@ def run_console(
 
                 if command == "delete":
                     _handle_voice_delete()
+                    output.write_prompt_hint()
+                    return
+
+                if command == "archive":
+                    _handle_voice_archive()
                     output.write_prompt_hint()
                     return
 
@@ -772,12 +793,15 @@ def run_console(
                 transport_mode=voice_transport,
                 daily_room_url=daily_room_url,
                 daily_token=daily_token,
+                tts_vendor=tts_vendor,
                 cartesia_api_key=os.getenv("CARTESIA_API_KEY"),
                 cartesia_voice_id=os.getenv("CARTESIA_VOICE_ID"),
+                elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY"),
+                elevenlabs_voice_id=os.getenv("ELEVENLABS_VOICE_ID"),
             )
             output.write_line(
                 "[voice] Starting voice command listener "
-                f"(transport={voice_transport}; say 'next', 'previous', 'back <#>', 'forward <#>', 'repeat', 'delete', 'first', 'last', 'read', 'pause', 'continue', 'highlight', or 'stop')..."
+                f"(transport={voice_transport}; say 'next', 'previous', 'back <#>', 'forward <#>', 'repeat', 'delete', 'archive', 'first', 'last', 'read', 'pause', 'continue', 'highlight', or 'stop')..."
             )
             voice_listener.start()
 
@@ -788,7 +812,13 @@ def run_console(
                 ]
                 if voice_listener.tts_enabled:
                     adapters.append(SpeakingOutputAdapter(voice_listener.speak_text))
-                    output.write_line("[tts] Cartesia TTS enabled — text will be spoken in the room.")
+                    output.write_line(
+                        f"[tts] {voice_listener.tts_vendor.title()} TTS enabled — text will be spoken in the room."
+                    )
+                elif voice_transport == "daily":
+                    output.write_line(
+                        f"[tts] {voice_listener.tts_vendor.title()} credentials not configured; spoken output disabled."
+                    )
                 output = CompositeOutputAdapter(adapters)
                 output.write_line("[mirror] Daily console mirroring enabled.")
 
@@ -896,6 +926,15 @@ def main():
         ),
     )
     parser.add_argument(
+        "--tts-vendor",
+        choices=["cartesia", "elevenlabs"],
+        default=os.getenv("IP_CONDUCTOR_TTS_VENDOR", "cartesia").lower(),
+        help=(
+            "TTS vendor for Daily voice output: 'cartesia' or 'elevenlabs'. "
+            "Can also be provided via IP_CONDUCTOR_TTS_VENDOR."
+        ),
+    )
+    parser.add_argument(
         "--daily-room-url",
         default=os.getenv("DAILY_ROOM_URL"),
         help=(
@@ -936,6 +975,7 @@ def main():
             voice_transport=args.voice_transport,
             daily_room_url=args.daily_room_url,
             daily_token=args.daily_token,
+            tts_vendor=args.tts_vendor,
         )
     except (AttributeError, ValueError, RuntimeError, OSError, KeyError) as e:
         print(f"Error starting application: {e}")
