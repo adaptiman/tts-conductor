@@ -144,6 +144,7 @@ class VoiceCommandProcessor(FrameProcessor):
         self._on_command = on_command
         self._last_command_at = 0.0
         self._last_command: Optional[str] = None
+        self._last_command_text: Optional[str] = None
         self._last_interim_command_at = 0.0
         self._last_interim_command: Optional[str] = None
 
@@ -156,9 +157,30 @@ class VoiceCommandProcessor(FrameProcessor):
             text = frame.text.strip().lower()
             logger.info(f"[VoiceCommands] Transcript: {text!r}")
 
-            def _emit(command: str) -> bool:
+            def _emit(command: str, transcript: str) -> bool:
                 now = time.monotonic()
-                if command == self._last_command and now - self._last_command_at < 1.0:
+                # Keep destructive commands on a longer debounce window so a
+                # single utterance cannot accidentally trigger twice.
+                command_debounce = 3.0 if command == "delete" else 1.0
+                if (
+                    command == self._last_command
+                    and now - self._last_command_at < command_debounce
+                ):
+                    return False
+
+                # Some STT streams evolve from e.g. "delete" to "delete the"
+                # for the same utterance. Treat that expansion as duplicate.
+                if (
+                    command == self._last_command
+                    and self._last_command_text is not None
+                    and transcript
+                    and transcript != self._last_command_text
+                    and now - self._last_command_at < 2.5
+                    and (
+                        transcript.startswith(self._last_command_text)
+                        or self._last_command_text.startswith(transcript)
+                    )
+                ):
                     return False
 
                 # Interim transcripts often get followed by a final transcript
@@ -174,6 +196,7 @@ class VoiceCommandProcessor(FrameProcessor):
 
                 self._last_command_at = now
                 self._last_command = command
+                self._last_command_text = transcript
                 if is_interim:
                     self._last_interim_command = command
                     self._last_interim_command_at = now
@@ -197,7 +220,7 @@ class VoiceCommandProcessor(FrameProcessor):
             # Examples: "back 3", "forward two", "repeat", "repeat that".
             for index, word in enumerate(words):
                 if word == "delete":
-                    command_emitted = _emit("delete")
+                    command_emitted = _emit("delete", text)
                     break
 
                 if word in ("back", "forward"):
@@ -207,11 +230,11 @@ class VoiceCommandProcessor(FrameProcessor):
                         if parsed is not None:
                             step = parsed
                     command = f"{word} {step}" if step != 1 else word
-                    command_emitted = _emit(command)
+                    command_emitted = _emit(command, text)
                     break
 
                 if word == "repeat":
-                    command_emitted = _emit("repeat")
+                    command_emitted = _emit("repeat", text)
                     break
 
             if not command_emitted:
@@ -219,7 +242,7 @@ class VoiceCommandProcessor(FrameProcessor):
                     # Strip common punctuation that Whisper sometimes appends.
                     if word in _COMMAND_MAP:
                         command = _COMMAND_MAP[word]
-                        _emit(command)
+                        _emit(command, text)
                         break  # Only fire one command per utterance
 
         await self.push_frame(frame, direction)
