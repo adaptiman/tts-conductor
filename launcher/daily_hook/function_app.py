@@ -5,6 +5,9 @@ This endpoint translates Daily webhook events into Container Apps Job actions:
 - Stop bot when participants leave / meeting ends
 """
 
+import base64
+import binascii
+import hashlib
 import hmac
 import json
 import os
@@ -46,6 +49,7 @@ class HookConfig:
     resource_group: str
     job_name: str
     hook_shared_secret: str
+    hook_hmac_secret: str
     webhook_room_name: str
 
 
@@ -74,6 +78,7 @@ def _load_config() -> HookConfig:
         resource_group=resource_group,
         job_name=job_name,
         hook_shared_secret=os.getenv("DAILY_HOOK_SHARED_SECRET", "").strip(),
+        hook_hmac_secret=os.getenv("DAILY_HOOK_HMAC_SECRET", "").strip(),
         webhook_room_name=os.getenv("DAILY_WEBHOOK_ROOM_NAME", "").strip(),
     )
 
@@ -194,12 +199,44 @@ def _provided_hook_secret(request: func.HttpRequest, payload: dict[str, Any]) ->
     return ""
 
 
+def _verify_daily_hmac(request: func.HttpRequest, hmac_secret: str) -> bool:
+    """Verify Daily's x-daily-signature header (HMAC-SHA256 of raw body).
+
+    Daily signs the raw request body with the webhook's HMAC key and sends
+    the result as:  x-daily-signature: sha256=<base64-encoded-digest>
+    The hmac_secret here is the base64-encoded key returned at registration.
+    """
+    sig_header = request.headers.get("x-daily-signature", "").strip()
+    if not sig_header:
+        return False
+
+    # Strip optional 'sha256=' prefix
+    sig_b64 = sig_header[7:] if sig_header.lower().startswith("sha256=") else sig_header
+    try:
+        expected_digest = base64.b64decode(sig_b64)
+    except (ValueError, binascii.Error):
+        return False
+
+    try:
+        key_bytes = base64.b64decode(hmac_secret)
+    except (ValueError, binascii.Error):
+        key_bytes = hmac_secret.encode()
+
+    raw_body = request.get_body()
+    computed = hmac.new(key_bytes, raw_body, hashlib.sha256).digest()
+    return hmac.compare_digest(computed, expected_digest)
+
+
 def _is_authorized(
     request: func.HttpRequest,
     payload: dict[str, Any],
     config: HookConfig,
 ) -> bool:
-    # Keep hooks easy to test locally when no shared secret is configured.
+    # Prefer HMAC signature verification (Daily's standard signing method).
+    if config.hook_hmac_secret:
+        return _verify_daily_hmac(request, config.hook_hmac_secret)
+
+    # Fall back to simple shared-secret header check.
     if not config.hook_shared_secret:
         return True
 
