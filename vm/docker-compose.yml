@@ -21,6 +21,17 @@ services:
       - tts-launcher-internal
       - tts-conductor-bot-net
 
+  tts-conductor-bot:
+    image: ${BOT_IMAGE:-acrttsconductorprod.azurecr.io/tts-conductor:latest}
+    container_name: tts-conductor-bot
+    restart: unless-stopped
+    command: ${BOT_COMMAND:-python ip_conductor.py --voice --voice-transport daily --headless}
+    env_file:
+      - ${BOT_ENV_SOURCE:-../.env}
+    networks:
+      - tts-conductor-bot-net
+    mem_limit: ${BOT_MEMORY_LIMIT:-850m}
+
   tts-launcher-proxy:
     image: nginx:1.27-alpine
     container_name: tts-launcher-proxy
