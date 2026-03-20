@@ -457,8 +457,8 @@ This repository now includes a combined CI/CD workflow at `.github/workflows/ci-
 
 ### What the workflow does
 - Runs CI (`lint.sh --check`, Python compile smoke check, and unit tests if a `tests/` directory exists) on every push and pull request.
-- Deploys to Azure Container Apps only after CI passes on pushes to `main`.
-- Builds and pushes a container image to Azure Container Registry (ACR), then updates an existing Container App to the new image.
+- On pushes to `main`, builds and pushes a container image to Azure Container Registry (ACR), then updates an existing Azure Container Apps Job template to the new image.
+- Job executions are started separately (manual `az containerapp job start` or via a launcher service). The workflow does not auto-start job runs.
 
 ### Required GitHub configuration
 
@@ -467,21 +467,21 @@ Add this GitHub Actions secret:
 
 Add these GitHub Actions repository variables:
 - `AZURE_RESOURCE_GROUP`
-- `AZURE_CONTAINER_APP_NAME`
+- `AZURE_CONTAINER_JOB_NAME`
 - `AZURE_CONTAINER_REGISTRY_NAME`
 - `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER` (example: `myregistry.azurecr.io`)
 - `IMAGE_REPOSITORY` (optional; defaults to `tts-conductor`)
 
 ### One-time Azure setup (before first deploy)
 
-Create Azure resources once (resource group, ACR, and Container App environment/app), then keep reusing them:
+Create Azure resources once (resource group, ACR, and Container Apps environment/job), then keep reusing them:
 
 1. Create or choose a resource group.
 2. Create an Azure Container Registry and note its login server.
 3. Create an Azure Container Apps environment.
-4. Create the Container App once (any starter image is fine). The workflow updates the image on each deployment.
+4. Create the Container Apps Job once (manual trigger type). The workflow updates the image template on each deployment.
 
-Ensure your Container App has the environment variables/secrets required by this app (Instapaper credentials, Daily values, and selected TTS provider credentials).
+Ensure your Container Apps Job has the environment variables/secrets required by this app (Instapaper credentials, Daily values, and selected TTS provider credentials).
 
 ### Container runtime defaults
 
@@ -494,7 +494,7 @@ When running this default command, the process exits automatically after all
 remote Daily participants leave and the room remains empty for the configured
 grace period (45s by default).
 
-Adjust the command in Azure Container Apps if you want a different transport or startup behavior.
+Adjust the command in the Container Apps Job template if you want a different transport or startup behavior.
 
 ## Troubleshooting
 
