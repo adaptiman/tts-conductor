@@ -50,6 +50,7 @@ class HookConfig:
     hook_hmac_secret: str
     webhook_room_name: str
     launcher_timeout_seconds: float
+    stop_via_webhook_enabled: bool
 
 
 def _load_config() -> HookConfig:
@@ -85,7 +86,14 @@ def _load_config() -> HookConfig:
         hook_hmac_secret=os.getenv("DAILY_HOOK_HMAC_SECRET", "").strip(),
         webhook_room_name=os.getenv("DAILY_WEBHOOK_ROOM_NAME", "").strip(),
         launcher_timeout_seconds=timeout_seconds,
+        stop_via_webhook_enabled=_as_bool(
+            os.getenv("DAILY_HOOK_ENABLE_STOP_ACTION", "false")
+        ),
     )
+
+
+def _as_bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _json_response(payload: dict[str, Any], status_code: int) -> func.HttpResponse:
@@ -244,7 +252,11 @@ def _rooms_match(configured_room: str, incoming_room: str) -> bool:
     return configured_tail == incoming_tail
 
 
-def _resolve_action(request: func.HttpRequest, payload: dict[str, Any]) -> tuple[str, str]:
+def _resolve_action(
+    request: func.HttpRequest,
+    payload: dict[str, Any],
+    config: HookConfig,
+) -> tuple[str, str]:
     requested_action = request.params.get("action", "").strip().lower()
     if requested_action in {"start", "stop"}:
         return requested_action, f"query:{requested_action}"
@@ -253,7 +265,7 @@ def _resolve_action(request: func.HttpRequest, payload: dict[str, Any]) -> tuple
     normalized_event = event_name.strip().lower().replace(" ", "")
     if normalized_event in START_EVENT_NAMES:
         return "start", event_name
-    if normalized_event in STOP_EVENT_NAMES:
+    if config.stop_via_webhook_enabled and normalized_event in STOP_EVENT_NAMES:
         return "stop", event_name
 
     first_non_owner_join = _extract_first_non_owner_join(payload)
@@ -432,7 +444,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 status_code=202,
             )
 
-    action, action_source = _resolve_action(req, payload)
+    action, action_source = _resolve_action(req, payload, config)
     if not action:
         return _json_response(
             {

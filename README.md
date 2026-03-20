@@ -511,6 +511,7 @@ Optional launcher app settings:
 - `DAILY_HOOK_SHARED_SECRET`
 - `DAILY_HOOK_HMAC_SECRET`
 - `DAILY_WEBHOOK_ROOM_NAME` (ignore webhook events that do not match this room)
+- `DAILY_HOOK_ENABLE_STOP_ACTION` (defaults to `false`; when `false`, webhook stop events are ignored)
 
 ### VM launcher stack (Docker Compose on the VM)
 
@@ -602,7 +603,9 @@ Set a webhook authentication header (recommended):
 
 Event mapping:
 - `meeting.started` (or `first_non_owner_join=true`) -> launcher starts the VM bot container.
-- `participant.left` and `meeting.ended` -> launcher stops the VM bot container.
+- `participant.left` and `meeting.ended` -> launcher stops the VM bot container **only if** `DAILY_HOOK_ENABLE_STOP_ACTION=true`.
+
+Default behavior is start-only via webhook. This avoids unreliable stop semantics in rooms where the bot itself can keep the room non-empty; shutdown remains controlled by the bot's in-app idle logic.
 
 If your webhook source cannot send custom headers, include `?secret=<daily-hook-secret>` in the webhook URL.
 
