@@ -29,8 +29,8 @@ import time
 from typing import Any, Awaitable, Callable, Optional, cast
 
 import aiohttp
-from loguru import logger
 import pyaudio
+from loguru import logger
 
 # ---------------------------------------------------------------------------
 # pipecat imports
@@ -41,8 +41,8 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     EndFrame,
     Frame,
-    InterruptionFrame,
     InterimTranscriptionFrame,
+    InterruptionFrame,
     OutputTransportMessageFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
@@ -55,7 +55,11 @@ from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.whisper.stt import Model, WhisperSTTService
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
-from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
+from pipecat.transports.local.audio import (
+    LocalAudioTransport,
+    LocalAudioTransportParams,
+)
+
 # ---------------------------------------------------------------------------
 # Spoken-word → command name map
 # ---------------------------------------------------------------------------

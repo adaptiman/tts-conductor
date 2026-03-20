@@ -4,16 +4,17 @@ import argparse
 import os
 import sys
 import termios
-import threading
 import textwrap
+import threading
 import time
 import tty
 import unicodedata
 from typing import cast
 
+from dotenv import load_dotenv
+
 from article_manager import ArticleManager
 from conductor_service import ConductorService
-from dotenv import load_dotenv
 from output_adapter import (
     CompositeOutputAdapter,
     ConsoleOutputAdapter,
@@ -386,6 +387,7 @@ def run_console(
     daily_room_url=None,
     daily_token=None,
     tts_vendor="cartesia",
+    headless=False,
 ):
     """Main console interface.
 
@@ -394,6 +396,8 @@ def run_console(
         voice: When True, start the pipecat voice command listener so that
                navigation commands can also be issued by speaking into the
                microphone.
+        headless: When True, disable keyboard input and keep running until
+            the process is stopped externally.
     """
     console_output = ConsoleOutputAdapter()
     output = console_output
@@ -848,6 +852,16 @@ def run_console(
         voice_listener.wait_for_speech_done(timeout=3.0)
 
     try:
+        if headless:
+            output.write_line("[headless] Keyboard input disabled.")
+            if not voice:
+                output.write_line("[headless] Voice mode is disabled; exiting.")
+                return
+
+            output.write_line("[headless] Waiting for voice commands...")
+            while True:
+                time.sleep(1)
+
         while True:
             try:
                 cmd = input("> ").strip()
@@ -951,6 +965,14 @@ def main():
         ),
     )
     parser.add_argument(
+        "--headless",
+        action="store_true",
+        help=(
+            "Run without interactive keyboard input. "
+            "Useful for container deployments where commands are voice-driven."
+        ),
+    )
+    parser.add_argument(
         "--list-audio-devices",
         action="store_true",
         help=(
@@ -976,6 +998,7 @@ def main():
             daily_room_url=args.daily_room_url,
             daily_token=args.daily_token,
             tts_vendor=args.tts_vendor,
+            headless=args.headless,
         )
     except (AttributeError, ValueError, RuntimeError, OSError, KeyError) as e:
         print(f"Error starting application: {e}")

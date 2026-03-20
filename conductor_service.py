@@ -4,9 +4,9 @@ This module keeps command parsing and execution separate from terminal I/O so
 it can be reused by local console mode and future cloud adapters.
 """
 
-from dataclasses import dataclass, field
 import os
 import textwrap
+from dataclasses import dataclass, field
 from typing import Optional
 
 

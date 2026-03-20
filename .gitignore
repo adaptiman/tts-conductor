@@ -85,6 +85,7 @@ Thumbs.db
 
 # Personal/sensitive files
 .netrc
+azure-credentials.json
 *.log
 
 # Development scripts

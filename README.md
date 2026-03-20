@@ -1,6 +1,6 @@
 # Instapaper Reader Console App
 
-A Python console application for reading and managing Instapaper articles.
+A Python Speech-to-Text / Text-to-Speech (STT-TTS) application with console commands for reading and managing Instapaper articles.
 
 ## Architecture
 
@@ -115,6 +115,11 @@ Run with voice commands + Daily transport and pick a TTS vendor for this session
 ```bash
 python ip_conductor.py --voice --voice-transport daily --tts-vendor cartesia
 python ip_conductor.py --voice --voice-transport daily --tts-vendor elevenlabs
+```
+
+Run in headless mode (for container/cloud runtime):
+```bash
+python ip_conductor.py --voice --voice-transport daily --headless
 ```
 
 Optional Daily viewer page:
@@ -391,6 +396,11 @@ This project includes comprehensive code quality tools to maintain clean, consis
 ./lint.sh
 ```
 
+#### Run lint checks in CI mode (no file rewrites):
+```bash
+./lint.sh --check
+```
+
 #### Run individual tools:
 ```bash
 # Format code automatically
@@ -431,6 +441,47 @@ If you're using VS Code with WSL, the project includes VS Code settings in `.vsc
 - Activate the venv when opening new terminals
 
 This provides seamless integration without manual activation within VS Code.
+
+## GitHub Actions and Azure Deployment
+
+This repository now includes a combined CI/CD workflow at `.github/workflows/ci-cd-azure.yml`.
+
+### What the workflow does
+- Runs CI (`lint.sh --check`, Python compile smoke check, and unit tests if a `tests/` directory exists) on every push and pull request.
+- Deploys to Azure Container Apps only after CI passes on pushes to `main`.
+- Builds and pushes a container image to Azure Container Registry (ACR), then updates an existing Container App to the new image.
+
+### Required GitHub configuration
+
+Add this GitHub Actions secret:
+- `AZURE_CREDENTIALS`: Service principal JSON used by `azure/login`.
+
+Add these GitHub Actions repository variables:
+- `AZURE_RESOURCE_GROUP`
+- `AZURE_CONTAINER_APP_NAME`
+- `AZURE_CONTAINER_REGISTRY_NAME`
+- `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER` (example: `myregistry.azurecr.io`)
+- `IMAGE_REPOSITORY` (optional; defaults to `tts-conductor`)
+
+### One-time Azure setup (before first deploy)
+
+Create Azure resources once (resource group, ACR, and Container App environment/app), then keep reusing them:
+
+1. Create or choose a resource group.
+2. Create an Azure Container Registry and note its login server.
+3. Create an Azure Container Apps environment.
+4. Create the Container App once (any starter image is fine). The workflow updates the image on each deployment.
+
+Ensure your Container App has the environment variables/secrets required by this app (Instapaper credentials, Daily values, and selected TTS provider credentials).
+
+### Container runtime defaults
+
+The included `Dockerfile` starts the app in voice + Daily + headless mode:
+```bash
+python ip_conductor.py --voice --voice-transport daily --headless
+```
+
+Adjust the command in Azure Container Apps if you want a different transport or startup behavior.
 
 ## Troubleshooting
 

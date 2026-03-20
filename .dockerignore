@@ -1,0 +1,13 @@
+.git
+.github
+.gitignore
+.venv
+.vscode
+.mypy_cache
+__pycache__
+.env
+*.pyc
+*.pyo
+*.pyd
+*.swp
+*.swo
