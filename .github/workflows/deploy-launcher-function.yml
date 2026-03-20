@@ -14,8 +14,8 @@ jobs:
     environment: production
     env:
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-      AZURE_CONTAINER_JOB_NAME: ${{ vars.AZURE_CONTAINER_JOB_NAME }}
       AZURE_LAUNCHER_FUNCTIONAPP_NAME: ${{ vars.AZURE_LAUNCHER_FUNCTIONAPP_NAME }}
+      VM_LAUNCHER_BASE_URL: ${{ vars.VM_LAUNCHER_BASE_URL }}
       DAILY_WEBHOOK_ROOM_NAME: ${{ vars.DAILY_WEBHOOK_ROOM_NAME }}
 
     steps:
@@ -27,8 +27,8 @@ jobs:
           set -euo pipefail
           required=(
             AZURE_RESOURCE_GROUP
-            AZURE_CONTAINER_JOB_NAME
             AZURE_LAUNCHER_FUNCTIONAPP_NAME
+            VM_LAUNCHER_BASE_URL
           )
 
           for key in "${required[@]}"; do
@@ -47,6 +47,14 @@ jobs:
             echo "::error::Missing repository secret JOB_LAUNCHER_SHARED_SECRET."
             exit 1
           fi
+
+          case "${VM_LAUNCHER_BASE_URL}" in
+            https://*) ;;
+            *)
+              echo "::error::VM_LAUNCHER_BASE_URL must start with https://"
+              exit 1
+              ;;
+          esac
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -67,18 +75,15 @@ jobs:
       - name: Configure function app settings
         run: |
           set -euo pipefail
-          AZURE_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
-
           az functionapp config appsettings set \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
             --name "${AZURE_LAUNCHER_FUNCTIONAPP_NAME}" \
             --settings \
-              AZURE_SUBSCRIPTION_ID="${AZURE_SUBSCRIPTION_ID}" \
-              AZURE_RESOURCE_GROUP="${AZURE_RESOURCE_GROUP}" \
-              AZURE_CONTAINER_JOB_NAME="${AZURE_CONTAINER_JOB_NAME}" \
+              VM_LAUNCHER_BASE_URL="${VM_LAUNCHER_BASE_URL}" \
+              VM_LAUNCHER_TIMEOUT_SECONDS="15" \
               JOB_LAUNCHER_SHARED_SECRET="${{ secrets.JOB_LAUNCHER_SHARED_SECRET }}" \
-              DAILY_HOOK_SHARED_SECRET="" \
-              DAILY_HOOK_HMAC_SECRET="" \
+              DAILY_HOOK_SHARED_SECRET="${{ secrets.DAILY_HOOK_SHARED_SECRET }}" \
+              DAILY_HOOK_HMAC_SECRET="${{ secrets.DAILY_HOOK_HMAC_SECRET }}" \
               DAILY_WEBHOOK_ROOM_NAME="${DAILY_WEBHOOK_ROOM_NAME:-}"
 
       - name: Deploy launcher function code

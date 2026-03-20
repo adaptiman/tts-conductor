@@ -76,6 +76,7 @@ venv.bak/
 .env.development.local
 .env.test.local
 .env.production.local
+vm/.env
 
 # OS generated files
 .DS_Store

@@ -474,11 +474,13 @@ Add these GitHub Actions repository variables:
 - `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER` (example: `myregistry.azurecr.io`)
 - `IMAGE_REPOSITORY` (optional; defaults to `tts-conductor`)
 - `AZURE_LAUNCHER_FUNCTIONAPP_NAME` (required for launcher deployment workflow)
+- `VM_LAUNCHER_BASE_URL` (example: `https://cookbook.thesweeneys.org:8443`)
 - `DAILY_WEBHOOK_ROOM_NAME` (optional; recommended room filter for webhook events)
 
 Add these additional GitHub Actions secrets for the launcher:
 - `JOB_LAUNCHER_SHARED_SECRET`: Shared secret expected in `x-job-launcher-secret` header.
-- `DAILY_HOOK_SHARED_SECRET`: Shared secret expected by the Daily webhook endpoint.
+- `DAILY_HOOK_SHARED_SECRET` (optional): Shared secret expected by the Daily webhook endpoint.
+- `DAILY_HOOK_HMAC_SECRET` (optional): Daily HMAC key used to verify `x-daily-signature`.
 
 ### One-time Azure setup (before first deploy)
 
@@ -491,27 +493,53 @@ Create Azure resources once (resource group, ACR, and Container Apps environment
 
 Ensure your Container Apps Job has the environment variables/secrets required by this app (Instapaper credentials, Daily values, and selected TTS provider credentials).
 
-### Phase 5: HTTP launcher for on-demand starts
+### Phase 5: HTTP launcher for VM on-demand starts
 
 The `launcher/` function app exposes:
-- `POST /api/launch`: Starts one job execution only if no execution is already active.
-- `GET /api/status`: Reports launcher health and any currently active execution.
-- `POST /api/daily-hook`: Handles Daily webhook events and starts/stops executions.
+- `POST /api/launch`: Proxies launch requests to the VM launcher service.
+- `GET /api/status`: Proxies status checks to the VM launcher service.
+- `POST /api/daily-hook`: Handles Daily webhook events and maps them to VM start/stop actions.
 
-The launcher uses Managed Identity + ARM API to call:
-- `.../jobs/<job-name>/executions` (idempotency check)
-- `.../jobs/<job-name>/start` (start execution)
-- `.../jobs/<job-name>/stop/<execution-name>` (stop active execution)
+The function app calls the VM launcher over HTTPS using `JOB_LAUNCHER_SHARED_SECRET` in the `x-job-launcher-secret` header.
 
 Required launcher app settings:
-- `AZURE_SUBSCRIPTION_ID`
-- `AZURE_RESOURCE_GROUP`
-- `AZURE_CONTAINER_JOB_NAME`
+- `VM_LAUNCHER_BASE_URL`
 - `JOB_LAUNCHER_SHARED_SECRET`
-- `DAILY_HOOK_SHARED_SECRET`
 
 Optional launcher app settings:
+- `VM_LAUNCHER_TIMEOUT_SECONDS` (defaults to 15)
+- `DAILY_HOOK_SHARED_SECRET`
+- `DAILY_HOOK_HMAC_SECRET`
 - `DAILY_WEBHOOK_ROOM_NAME` (ignore webhook events that do not match this room)
+
+### VM launcher stack (Docker Compose on the VM)
+
+VM files are under `vm/`:
+- `vm/docker-compose.yml`
+- `vm/nginx/launcher.conf`
+- `vm/launcher/app.py`
+
+The stack includes:
+- `tts-launcher` (FastAPI service controlling Docker on the host via `/var/run/docker.sock`)
+- `tts-launcher-proxy` (nginx TLS proxy on port `8443`)
+- Separate Docker networks (`tts-launcher-internal`, `tts-conductor-bot-net`) so this stack does not share networks with `openeats`
+
+On the VM:
+
+```bash
+cd ~/tts-conductor/vm
+cp .env.example .env
+# Edit vm/.env and set JOB_LAUNCHER_SHARED_SECRET plus any bot limits.
+
+# Ensure Docker can pull from ACR.
+az acr login --name <your-acr-name>
+
+docker compose up -d --build
+```
+
+If NSG ingress is missing, allow TCP 8443 on the VM NSG.
+
+TODO: move runtime secrets out of plain `.env` into a controlled secret solution (for example Key Vault or Docker Swarm/Kubernetes secrets).
 
 ### One-time launcher Azure setup
 
@@ -554,8 +582,8 @@ Set a webhook authentication header (recommended):
 - Header value: same value as `DAILY_HOOK_SHARED_SECRET`
 
 Event mapping:
-- `meeting.started` (or `first_non_owner_join=true`) -> launcher starts the bot job.
-- `participant.left` and `meeting.ended` -> launcher stops active bot execution(s).
+- `meeting.started` (or `first_non_owner_join=true`) -> launcher starts the VM bot container.
+- `participant.left` and `meeting.ended` -> launcher stops the VM bot container.
 
 If your webhook source cannot send custom headers, include `?secret=<daily-hook-secret>` in the webhook URL.
 
@@ -573,8 +601,8 @@ curl -X POST "https://<your-launcher-app>.azurewebsites.net/api/launch" \
 ```
 
 Response behavior:
-- Starts new execution (`started: true`) when no active run exists.
-- Returns `started: false` with the active execution metadata when one is already running.
+- Starts bot container (`started: true`) when no active container exists.
+- Returns `started: false` with the active container metadata when one is already running.
 
 ### Container runtime defaults
 

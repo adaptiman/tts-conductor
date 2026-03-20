@@ -1,8 +1,7 @@
-"""Azure Function: Daily webhook lifecycle handler for the bot job.
+"""Azure Function: Daily webhook lifecycle handler for the VM launcher.
 
-This endpoint translates Daily webhook events into Container Apps Job actions:
-- Start bot when a meeting starts (or first non-owner joins via meeting_join_hook)
-- Stop bot when participants leave / meeting ends
+This endpoint validates Daily webhooks, maps start/stop events, and then calls
+the VM launcher service over HTTPS.
 """
 
 import base64
@@ -17,14 +16,8 @@ from typing import Any, Optional
 import azure.functions as func
 import requests
 
-ARM_API_VERSION = "2023-05-01"
-ACTIVE_EXECUTION_STATUSES = {
-    "Running",
-    "InProgress",
-    "Provisioning",
-    "Pending",
-    "Queued",
-}
+AUTH_HEADER_NAME = "x-job-launcher-secret"
+DEFAULT_LAUNCHER_TIMEOUT_SECONDS = 15.0
 START_EVENT_NAMES = {
     "meeting.started",
     "meeting_started",
@@ -51,126 +44,48 @@ STOP_EVENT_NAMES = {
 
 @dataclass(frozen=True)
 class HookConfig:
-    subscription_id: str
-    resource_group: str
-    job_name: str
+    launcher_base_url: str
+    launcher_shared_secret: str
     hook_shared_secret: str
     hook_hmac_secret: str
     webhook_room_name: str
+    launcher_timeout_seconds: float
 
 
 def _load_config() -> HookConfig:
     missing: list[str] = []
 
-    subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID", "").strip()
-    if not subscription_id:
-        missing.append("AZURE_SUBSCRIPTION_ID")
+    launcher_base_url = os.getenv("VM_LAUNCHER_BASE_URL", "").strip()
+    if not launcher_base_url:
+        missing.append("VM_LAUNCHER_BASE_URL")
 
-    resource_group = os.getenv("AZURE_RESOURCE_GROUP", "").strip()
-    if not resource_group:
-        missing.append("AZURE_RESOURCE_GROUP")
-
-    job_name = os.getenv("AZURE_CONTAINER_JOB_NAME", "").strip()
-    if not job_name:
-        missing.append("AZURE_CONTAINER_JOB_NAME")
+    launcher_shared_secret = os.getenv("JOB_LAUNCHER_SHARED_SECRET", "").strip()
+    if not launcher_shared_secret:
+        missing.append("JOB_LAUNCHER_SHARED_SECRET")
 
     if missing:
         raise RuntimeError(
             "Launcher is missing required environment variables: " + ", ".join(missing)
         )
 
+    timeout_raw = os.getenv("VM_LAUNCHER_TIMEOUT_SECONDS", "").strip()
+    timeout_seconds = DEFAULT_LAUNCHER_TIMEOUT_SECONDS
+    if timeout_raw:
+        try:
+            timeout_seconds = float(timeout_raw)
+        except ValueError:
+            timeout_seconds = DEFAULT_LAUNCHER_TIMEOUT_SECONDS
+    if timeout_seconds <= 0:
+        timeout_seconds = DEFAULT_LAUNCHER_TIMEOUT_SECONDS
+
     return HookConfig(
-        subscription_id=subscription_id,
-        resource_group=resource_group,
-        job_name=job_name,
+        launcher_base_url=launcher_base_url.rstrip("/"),
+        launcher_shared_secret=launcher_shared_secret,
         hook_shared_secret=os.getenv("DAILY_HOOK_SHARED_SECRET", "").strip(),
         hook_hmac_secret=os.getenv("DAILY_HOOK_HMAC_SECRET", "").strip(),
         webhook_room_name=os.getenv("DAILY_WEBHOOK_ROOM_NAME", "").strip(),
+        launcher_timeout_seconds=timeout_seconds,
     )
-
-
-def _management_base_url(config: HookConfig) -> str:
-    return (
-        "https://management.azure.com/subscriptions/"
-        f"{config.subscription_id}/resourceGroups/{config.resource_group}"
-        f"/providers/Microsoft.App/jobs/{config.job_name}"
-    )
-
-
-def _get_arm_token() -> str:
-    endpoint = os.environ["IDENTITY_ENDPOINT"]
-    header_value = os.environ["IDENTITY_HEADER"]
-    resp = requests.get(
-        endpoint,
-        params={
-            "resource": "https://management.azure.com/",
-            "api-version": "2019-08-01",
-        },
-        headers={"X-IDENTITY-HEADER": header_value},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
-
-def _management_headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {_get_arm_token()}",
-        "Content-Type": "application/json",
-    }
-
-
-def _list_job_executions(config: HookConfig) -> list[dict[str, Any]]:
-    url = f"{_management_base_url(config)}/executions?api-version={ARM_API_VERSION}"
-    response = requests.get(url, headers=_management_headers(), timeout=20)
-    response.raise_for_status()
-    payload = response.json()
-    return payload.get("value", [])
-
-
-def _is_execution_active(execution: dict[str, Any]) -> bool:
-    properties = execution.get("properties") or {}
-    status = str(properties.get("status") or "").strip()
-    if not status:
-        return False
-    return status in ACTIVE_EXECUTION_STATUSES
-
-
-def _active_executions(executions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    active = [item for item in executions if _is_execution_active(item)]
-
-    def _start_time_key(item: dict[str, Any]) -> str:
-        properties = item.get("properties") or {}
-        return str(properties.get("startTime") or "")
-
-    active.sort(key=_start_time_key, reverse=True)
-    return active
-
-
-def _latest_active_execution(
-    executions: list[dict[str, Any]],
-) -> Optional[dict[str, Any]]:
-    active = _active_executions(executions)
-    return active[0] if active else None
-
-
-def _start_job_execution(config: HookConfig) -> dict[str, Any]:
-    url = f"{_management_base_url(config)}/start?api-version={ARM_API_VERSION}"
-    response = requests.post(url, headers=_management_headers(), json={}, timeout=20)
-    response.raise_for_status()
-    return response.json()
-
-
-def _stop_job_execution(config: HookConfig, execution_name: str) -> dict[str, Any]:
-    url = (
-        f"{_management_base_url(config)}/stop/{execution_name}"
-        f"?api-version={ARM_API_VERSION}"
-    )
-    response = requests.post(url, headers=_management_headers(), json=None, timeout=20)
-    response.raise_for_status()
-    if not response.text:
-        return {}
-    return response.json()
 
 
 def _json_response(payload: dict[str, Any], status_code: int) -> func.HttpResponse:
@@ -206,17 +121,11 @@ def _provided_hook_secret(request: func.HttpRequest, payload: dict[str, Any]) ->
 
 
 def _verify_daily_hmac(request: func.HttpRequest, hmac_secret: str) -> bool:
-    """Verify Daily's x-daily-signature header (HMAC-SHA256 of raw body).
-
-    Daily signs the raw request body with the webhook's HMAC key and sends
-    the result as:  x-daily-signature: sha256=<base64-encoded-digest>
-    The hmac_secret here is the base64-encoded key returned at registration.
-    """
+    """Verify Daily's x-daily-signature header (HMAC-SHA256 of raw body)."""
     sig_header = request.headers.get("x-daily-signature", "").strip()
     if not sig_header:
         return False
 
-    # Strip optional 'sha256=' prefix
     sig_b64 = sig_header[7:] if sig_header.lower().startswith("sha256=") else sig_header
     try:
         expected_digest = base64.b64decode(sig_b64)
@@ -238,11 +147,9 @@ def _is_authorized(
     payload: dict[str, Any],
     config: HookConfig,
 ) -> bool:
-    # Prefer HMAC signature verification (Daily's standard signing method).
     if config.hook_hmac_secret:
         return _verify_daily_hmac(request, config.hook_hmac_secret)
 
-    # Fall back to simple shared-secret header check.
     if not config.hook_shared_secret:
         return True
 
@@ -356,56 +263,116 @@ def _resolve_action(request: func.HttpRequest, payload: dict[str, Any]) -> tuple
     return "", event_name
 
 
-def _start_if_needed(config: HookConfig) -> dict[str, Any]:
-    executions = _list_job_executions(config)
-    active_execution = _latest_active_execution(executions)
+def _launcher_url(config: HookConfig, action: str) -> str:
+    route_map = {
+        "start": "/launch",
+        "stop": "/stop",
+        "status": "/status",
+    }
+    return f"{config.launcher_base_url}{route_map[action]}"
 
-    if active_execution is not None:
-        properties = active_execution.get("properties") or {}
-        return {
-            "started": False,
-            "reason": "execution_already_active",
-            "execution": {
-                "name": active_execution.get("name"),
-                "status": properties.get("status"),
-                "startTime": properties.get("startTime"),
-            },
-        }
 
-    started = _start_job_execution(config)
+def _parse_response_body(response: requests.Response) -> dict[str, Any]:
+    content_type = response.headers.get("content-type", "")
+    if "application/json" in content_type.lower():
+        parsed = response.json()
+        if isinstance(parsed, dict):
+            return parsed
+        return {"value": parsed}
+
+    text = (response.text or "").strip()
+    if not text:
+        return {}
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+        return {"value": parsed}
+    except json.JSONDecodeError:
+        return {"raw": text[:1000]}
+
+
+def _call_vm_launcher(
+    config: HookConfig,
+    action: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    url = _launcher_url(config, action)
+    headers = {
+        AUTH_HEADER_NAME: config.launcher_shared_secret,
+        "Content-Type": "application/json",
+    }
+
+    response = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=config.launcher_timeout_seconds,
+    )
+    body = _parse_response_body(response)
+    response.raise_for_status()
     return {
-        "started": True,
-        "execution": {
-            "name": started.get("name"),
-            "id": started.get("id"),
+        "statusCode": response.status_code,
+        "body": body,
+    }
+
+
+def _start_if_needed(
+    config: HookConfig,
+    action_source: str,
+    incoming_room: str,
+) -> dict[str, Any]:
+    result = _call_vm_launcher(
+        config,
+        "start",
+        {
+            "source": "daily-hook",
+            "actionSource": action_source,
+            "incomingRoom": incoming_room,
         },
+    )
+    body = result["body"]
+    payload: dict[str, Any] = {
+        "launcherStatusCode": result["statusCode"],
+        "launcherResponse": body,
     }
+    started = body.get("started")
+    if isinstance(started, bool):
+        payload["started"] = started
+    return payload
 
 
-def _stop_active(config: HookConfig) -> dict[str, Any]:
-    executions = _list_job_executions(config)
-    active = _active_executions(executions)
-
-    if not active:
-        return {
-            "stopped": False,
-            "reason": "no_active_execution",
-            "executionsStopped": [],
-        }
-
-    stopped_names: list[str] = []
-    for execution in active:
-        execution_name = str(execution.get("name") or "").strip()
-        if not execution_name:
-            continue
-        _stop_job_execution(config, execution_name)
-        stopped_names.append(execution_name)
-
-    return {
-        "stopped": bool(stopped_names),
-        "executionsStopped": stopped_names,
-        "activeCountBeforeStop": len(active),
+def _stop_active(
+    config: HookConfig,
+    action_source: str,
+    incoming_room: str,
+) -> dict[str, Any]:
+    result = _call_vm_launcher(
+        config,
+        "stop",
+        {
+            "source": "daily-hook",
+            "actionSource": action_source,
+            "incomingRoom": incoming_room,
+        },
+    )
+    body = result["body"]
+    payload: dict[str, Any] = {
+        "launcherStatusCode": result["statusCode"],
+        "launcherResponse": body,
     }
+    stopped = body.get("stopped")
+    if isinstance(stopped, bool):
+        payload["stopped"] = stopped
+    return payload
+
+
+def _response_preview(response: Optional[requests.Response]) -> str:
+    if response is None:
+        return ""
+    text = (response.text or "").strip()
+    return text[:500]
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
@@ -479,40 +446,39 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     try:
         if action == "start":
-            result = _start_if_needed(config)
+            result = _start_if_needed(config, action_source, incoming_room)
             return _json_response(
                 {
                     "ok": True,
                     "handled": True,
                     "action": "start",
                     "actionSource": action_source,
-                    "job": config.job_name,
+                    "launcherBaseUrl": config.launcher_base_url,
                     **result,
                 },
                 status_code=202,
             )
 
-        result = _stop_active(config)
+        result = _stop_active(config, action_source, incoming_room)
         return _json_response(
             {
                 "ok": True,
                 "handled": True,
                 "action": "stop",
                 "actionSource": action_source,
-                "job": config.job_name,
+                "launcherBaseUrl": config.launcher_base_url,
                 **result,
             },
             status_code=202,
         )
     except requests.HTTPError as exc:
-        status_code = exc.response.status_code if exc.response is not None else 502
-        body = exc.response.text if exc.response is not None else str(exc)
+        upstream_status = exc.response.status_code if exc.response is not None else 502
         return _json_response(
             {
                 "ok": False,
-                "error": "azure_api_error",
-                "statusCode": status_code,
-                "message": body[:500],
+                "error": "vm_launcher_api_error",
+                "upstreamStatusCode": upstream_status,
+                "message": _response_preview(exc.response) or str(exc),
             },
             status_code=502,
         )
@@ -520,7 +486,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         return _json_response(
             {
                 "ok": False,
-                "error": "azure_api_unreachable",
+                "error": "vm_launcher_unreachable",
                 "message": str(exc),
             },
             status_code=502,

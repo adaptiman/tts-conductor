@@ -1,0 +1,46 @@
+services:
+  tts-launcher:
+    build:
+      context: ./launcher
+    container_name: tts-launcher
+    restart: unless-stopped
+    environment:
+      LAUNCHER_SHARED_SECRET: ${JOB_LAUNCHER_SHARED_SECRET}
+      BOT_IMAGE: ${BOT_IMAGE:-crttsconductorprod.azurecr.io/tts-conductor:latest}
+      BOT_CONTAINER_NAME: ${BOT_CONTAINER_NAME:-tts-conductor-bot}
+      BOT_COMMAND: ${BOT_COMMAND:-python ip_conductor.py --voice --voice-transport daily --headless}
+      BOT_NETWORK: ${BOT_NETWORK:-tts-conductor-bot-net}
+      BOT_PULL_ON_START: ${BOT_PULL_ON_START:-true}
+      BOT_MEMORY_LIMIT: ${BOT_MEMORY_LIMIT:-850m}
+      BOT_NANO_CPUS: ${BOT_NANO_CPUS:-700000000}
+      BOT_ENV_FILE: /run/bot-env/.env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${BOT_ENV_SOURCE:-../.env}:/run/bot-env/.env:ro
+    networks:
+      - tts-launcher-internal
+      - tts-conductor-bot-net
+
+  tts-launcher-proxy:
+    image: nginx:1.27-alpine
+    container_name: tts-launcher-proxy
+    restart: unless-stopped
+    depends_on:
+      - tts-launcher
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./nginx/launcher.conf:/etc/nginx/conf.d/default.conf:ro
+      - /docker-volumes/etc/letsencrypt/live/cookbook.thesweeneys.org/fullchain.pem:/etc/letsencrypt/live/cookbook.thesweeneys.org/fullchain.pem:ro
+      - /docker-volumes/etc/letsencrypt/live/cookbook.thesweeneys.org/privkey.pem:/etc/letsencrypt/live/cookbook.thesweeneys.org/privkey.pem:ro
+      - /etc/ssl/certs/dhparam-2048.pem:/etc/ssl/certs/dhparam-2048.pem:ro
+    networks:
+      - tts-launcher-internal
+
+networks:
+  tts-launcher-internal:
+    name: tts-launcher-internal
+    driver: bridge
+  tts-conductor-bot-net:
+    name: tts-conductor-bot-net
+    driver: bridge

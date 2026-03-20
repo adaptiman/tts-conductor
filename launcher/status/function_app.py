@@ -1,45 +1,29 @@
-"""Azure Function: Launcher status endpoint."""
+"""Azure Function: launcher status proxy endpoint."""
 
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import azure.functions as func
 import requests
 
-ARM_API_VERSION = "2023-05-01"
-ACTIVE_EXECUTION_STATUSES = {
-    "Running",
-    "InProgress",
-    "Provisioning",
-    "Pending",
-    "Queued",
-}
+DEFAULT_LAUNCHER_TIMEOUT_SECONDS = 15.0
 
 
 @dataclass(frozen=True)
 class LauncherConfig:
-    subscription_id: str
-    resource_group: str
-    job_name: str
+    launcher_base_url: str
     shared_secret: str
+    launcher_timeout_seconds: float
 
 
 def _load_config() -> LauncherConfig:
     missing: list[str] = []
 
-    subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID", "").strip()
-    if not subscription_id:
-        missing.append("AZURE_SUBSCRIPTION_ID")
-
-    resource_group = os.getenv("AZURE_RESOURCE_GROUP", "").strip()
-    if not resource_group:
-        missing.append("AZURE_RESOURCE_GROUP")
-
-    job_name = os.getenv("AZURE_CONTAINER_JOB_NAME", "").strip()
-    if not job_name:
-        missing.append("AZURE_CONTAINER_JOB_NAME")
+    launcher_base_url = os.getenv("VM_LAUNCHER_BASE_URL", "").strip()
+    if not launcher_base_url:
+        missing.append("VM_LAUNCHER_BASE_URL")
 
     shared_secret = os.getenv("JOB_LAUNCHER_SHARED_SECRET", "").strip()
     if not shared_secret:
@@ -50,78 +34,63 @@ def _load_config() -> LauncherConfig:
             "Launcher is missing required environment variables: " + ", ".join(missing)
         )
 
+    timeout_raw = os.getenv("VM_LAUNCHER_TIMEOUT_SECONDS", "").strip()
+    timeout_seconds = DEFAULT_LAUNCHER_TIMEOUT_SECONDS
+    if timeout_raw:
+        try:
+            timeout_seconds = float(timeout_raw)
+        except ValueError:
+            timeout_seconds = DEFAULT_LAUNCHER_TIMEOUT_SECONDS
+    if timeout_seconds <= 0:
+        timeout_seconds = DEFAULT_LAUNCHER_TIMEOUT_SECONDS
+
     return LauncherConfig(
-        subscription_id=subscription_id,
-        resource_group=resource_group,
-        job_name=job_name,
+        launcher_base_url=launcher_base_url.rstrip("/"),
         shared_secret=shared_secret,
+        launcher_timeout_seconds=timeout_seconds,
     )
 
 
-def _management_base_url(config: LauncherConfig) -> str:
-    return (
-        "https://management.azure.com/subscriptions/"
-        f"{config.subscription_id}/resourceGroups/{config.resource_group}"
-        f"/providers/Microsoft.App/jobs/{config.job_name}"
+def _status_url(config: LauncherConfig) -> str:
+    return f"{config.launcher_base_url}/status"
+
+
+def _parse_response_body(response: requests.Response) -> dict[str, Any]:
+    content_type = response.headers.get("content-type", "")
+    if "application/json" in content_type.lower():
+        parsed = response.json()
+        if isinstance(parsed, dict):
+            return parsed
+        return {"value": parsed}
+
+    text = (response.text or "").strip()
+    if not text:
+        return {}
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+        return {"value": parsed}
+    except json.JSONDecodeError:
+        return {"raw": text[:1000]}
+
+
+def _proxy_status(config: LauncherConfig) -> tuple[int, dict[str, Any]]:
+    response = requests.get(
+        _status_url(config),
+        headers={"x-job-launcher-secret": config.shared_secret},
+        timeout=config.launcher_timeout_seconds,
     )
-
-
-def _get_arm_token() -> str:
-    """Obtain an ARM access token from the Managed Identity endpoint."""
-    endpoint = os.environ["IDENTITY_ENDPOINT"]
-    header_value = os.environ["IDENTITY_HEADER"]
-    resp = requests.get(
-        endpoint,
-        params={
-            "resource": "https://management.azure.com/",
-            "api-version": "2019-08-01",
-        },
-        headers={"X-IDENTITY-HEADER": header_value},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
-
-def _management_headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {_get_arm_token()}",
-        "Content-Type": "application/json",
-    }
-
-
-def _list_job_executions(config: LauncherConfig) -> list[dict[str, Any]]:
-    url = (
-        f"{_management_base_url(config)}/executions"
-        f"?api-version={ARM_API_VERSION}"
-    )
-    response = requests.get(url, headers=_management_headers(), timeout=20)
+    body = _parse_response_body(response)
     response.raise_for_status()
-    payload = response.json()
-    return payload.get("value", [])
+    return response.status_code, body
 
 
-def _is_execution_active(execution: dict[str, Any]) -> bool:
-    properties = execution.get("properties") or {}
-    status = str(properties.get("status") or "").strip()
-    if not status:
-        return False
-    return status in ACTIVE_EXECUTION_STATUSES
-
-
-def _latest_active_execution(
-    executions: list[dict[str, Any]],
-) -> Optional[dict[str, Any]]:
-    active = [item for item in executions if _is_execution_active(item)]
-    if not active:
-        return None
-
-    def _start_time_key(item: dict[str, Any]) -> str:
-        properties = item.get("properties") or {}
-        return str(properties.get("startTime") or "")
-
-    active.sort(key=_start_time_key, reverse=True)
-    return active[0]
+def _response_preview(response: requests.Response | None) -> str:
+    if response is None:
+        return ""
+    return (response.text or "").strip()[:500]
 
 
 def _json_response(payload: dict[str, Any], status_code: int) -> Any:
@@ -132,27 +101,18 @@ def _json_response(payload: dict[str, Any], status_code: int) -> Any:
     )
 
 
-def main(req: func.HttpRequest) -> func.HttpResponse:
-    """Quick diagnostics endpoint for launcher health and active execution."""
+def main(_req: func.HttpRequest) -> func.HttpResponse:
+    """Quick diagnostics endpoint for launcher health and active bot state."""
     try:
         config = _load_config()
-        executions = _list_job_executions(config)
-        active_execution = _latest_active_execution(executions)
-        active_payload: dict[str, Any] | None = None
-
-        if active_execution is not None:
-            properties = active_execution.get("properties") or {}
-            active_payload = {
-                "name": active_execution.get("name"),
-                "status": properties.get("status"),
-                "startTime": properties.get("startTime"),
-            }
+        launcher_status_code, launcher_payload = _proxy_status(config)
 
         return _json_response(
             {
                 "ok": True,
-                "job": config.job_name,
-                "activeExecution": active_payload,
+                "launcherBaseUrl": config.launcher_base_url,
+                "launcherStatusCode": launcher_status_code,
+                "launcher": launcher_payload,
             },
             status_code=200,
         )
@@ -165,11 +125,22 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             },
             status_code=500,
         )
+    except requests.HTTPError as exc:
+        upstream_status = exc.response.status_code if exc.response is not None else 502
+        return _json_response(
+            {
+                "ok": False,
+                "error": "vm_launcher_api_error",
+                "upstreamStatusCode": upstream_status,
+                "message": _response_preview(exc.response) or str(exc),
+            },
+            status_code=502,
+        )
     except requests.RequestException as exc:
         return _json_response(
             {
                 "ok": False,
-                "error": "azure_api_unreachable",
+                "error": "vm_launcher_unreachable",
                 "message": str(exc),
             },
             status_code=502,
