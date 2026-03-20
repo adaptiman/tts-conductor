@@ -101,7 +101,7 @@ def _json_response(payload: dict[str, Any], status_code: int) -> Any:
     )
 
 
-def main(_req: func.HttpRequest) -> func.HttpResponse:
+def main(req: func.HttpRequest) -> func.HttpResponse:
     """Quick diagnostics endpoint for launcher health and active bot state."""
     try:
         config = _load_config()

@@ -75,6 +75,11 @@ jobs:
       - name: Configure function app settings
         run: |
           set -euo pipefail
+          # Remove blob-based run-from-package if present so the zip deploy owns the filesystem
+          az functionapp config appsettings delete \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --name "${AZURE_LAUNCHER_FUNCTIONAPP_NAME}" \
+            --setting-names WEBSITE_RUN_FROM_PACKAGE 2>/dev/null || true
           az functionapp config appsettings set \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
             --name "${AZURE_LAUNCHER_FUNCTIONAPP_NAME}" \
@@ -84,12 +89,20 @@ jobs:
               JOB_LAUNCHER_SHARED_SECRET="${{ secrets.JOB_LAUNCHER_SHARED_SECRET }}" \
               DAILY_HOOK_SHARED_SECRET="${{ secrets.DAILY_HOOK_SHARED_SECRET }}" \
               DAILY_HOOK_HMAC_SECRET="${{ secrets.DAILY_HOOK_HMAC_SECRET }}" \
-              DAILY_WEBHOOK_ROOM_NAME="${DAILY_WEBHOOK_ROOM_NAME:-}"
+              DAILY_WEBHOOK_ROOM_NAME="${DAILY_WEBHOOK_ROOM_NAME:-}" \
+            -o none
+
+      - name: Package launcher
+        run: |
+          cd launcher
+          zip -r ../launcher.zip . -x "*.pyc" -x "__pycache__/*"
 
       - name: Deploy launcher function code
-        uses: Azure/functions-action@v1
-        with:
-          app-name: ${{ env.AZURE_LAUNCHER_FUNCTIONAPP_NAME }}
-          package: ./launcher
-          scm-do-build-during-deployment: true
-          enable-oryx-build: true
+        run: |
+          set -euo pipefail
+          az functionapp deploy \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --name "${AZURE_LAUNCHER_FUNCTIONAPP_NAME}" \
+            --src-path ./launcher.zip \
+            --type zip \
+            --clean true
