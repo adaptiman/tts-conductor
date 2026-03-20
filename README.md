@@ -534,9 +534,15 @@ cp .env.example .env
 
 # Ensure Docker can pull from ACR.
 az acr login --name <your-acr-name>
+docker pull <your-acr-login-server>/tts-conductor:latest
 
 docker compose up -d --build
 ```
+
+Notes:
+- `BOT_PULL_ON_START` defaults to `false` for the VM launcher stack. This avoids launch failures when runtime registry auth is unavailable inside the launcher container.
+- Refresh the bot image during deploy/maintenance with `docker pull <your-acr-login-server>/tts-conductor:latest`.
+- If you set `BOT_PULL_ON_START=true`, ensure the launcher runtime has valid registry credentials for every launch request.
 
 If NSG ingress is missing, allow TCP 8443 on the VM NSG.
 

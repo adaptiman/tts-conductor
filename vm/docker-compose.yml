@@ -10,7 +10,7 @@ services:
       BOT_CONTAINER_NAME: ${BOT_CONTAINER_NAME:-tts-conductor-bot}
       BOT_COMMAND: ${BOT_COMMAND:-python ip_conductor.py --voice --voice-transport daily --headless}
       BOT_NETWORK: ${BOT_NETWORK:-tts-conductor-bot-net}
-      BOT_PULL_ON_START: ${BOT_PULL_ON_START:-true}
+      BOT_PULL_ON_START: ${BOT_PULL_ON_START:-false}
       BOT_MEMORY_LIMIT: ${BOT_MEMORY_LIMIT:-850m}
       BOT_NANO_CPUS: ${BOT_NANO_CPUS:-700000000}
       BOT_ENV_FILE: /run/bot-env/.env
