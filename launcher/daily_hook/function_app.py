@@ -29,6 +29,12 @@ START_EVENT_NAMES = {
     "meeting.started",
     "meeting_started",
     "meeting-started",
+    "participant.joined",
+    "participant_joined",
+    "participant-joined",
+    "waiting-participant.joined",
+    "waiting_participant_joined",
+    "waiting-participant-joined",
 }
 STOP_EVENT_NAMES = {
     "participant.left",
