@@ -55,6 +55,10 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install \
+            --platform manylinux_2_17_x86_64 \
+            --implementation cp \
+            --python-version 311 \
+            --only-binary :all: \
             --target=./launcher/.python_packages/lib/site-packages \
             -r ./launcher/requirements.txt
 
