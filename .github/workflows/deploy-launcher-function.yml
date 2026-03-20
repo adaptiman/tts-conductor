@@ -103,4 +103,4 @@ jobs:
           az functionapp deployment source config-zip \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
             --name "${AZURE_LAUNCHER_FUNCTIONAPP_NAME}" \
-            --src-path ./launcher.zip
+            --src ./launcher.zip
