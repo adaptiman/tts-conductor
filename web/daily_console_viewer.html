@@ -72,7 +72,7 @@
     .status {
       color: var(--muted);
       font-size: 13px;
-      grid-column: 3 / 5;
+      grid-column: 1 / -1;
     }
 
     .console {
@@ -101,8 +101,6 @@
       <input id="token" placeholder="Daily token (optional for public rooms)" />
       <button id="joinBtn">Join</button>
       <button id="leaveBtn" class="secondary">Leave</button>
-      <input id="launcherUrl" placeholder="Launcher URL (https://...azurewebsites.net/api/launch) — optional" />
-      <input id="launcherSecret" type="password" placeholder="Launcher secret — optional" />
       <div class="status" id="status">Not connected</div>
     </div>
 
@@ -114,8 +112,6 @@
 
     const roomUrlInput = document.getElementById('roomUrl');
     const tokenInput = document.getElementById('token');
-    const launcherUrlInput = document.getElementById('launcherUrl');
-    const launcherSecretInput = document.getElementById('launcherSecret');
     const joinBtn = document.getElementById('joinBtn');
     const leaveBtn = document.getElementById('leaveBtn');
     const statusEl = document.getElementById('status');
@@ -123,10 +119,6 @@
 
     const savedRoom = localStorage.getItem('daily_console_room_url');
     if (savedRoom) roomUrlInput.value = savedRoom;
-    const savedLauncherUrl = localStorage.getItem('daily_console_launcher_url');
-    if (savedLauncherUrl) launcherUrlInput.value = savedLauncherUrl;
-    const savedLauncherSecret = localStorage.getItem('daily_console_launcher_secret');
-    if (savedLauncherSecret) launcherSecretInput.value = savedLauncherSecret;
 
     let callObject = null;
     const audioElements = {};  // sessionId → <audio>
@@ -242,30 +234,6 @@
       }
     }
 
-    async function launchBot() {
-      const launcherUrl = launcherUrlInput.value.trim();
-      const secret = launcherSecretInput.value.trim();
-      if (!launcherUrl) return;
-      localStorage.setItem('daily_console_launcher_url', launcherUrl);
-      localStorage.setItem('daily_console_launcher_secret', secret);
-      appendLine('[launcher] Sending launch request...');
-      try {
-        const headers = {};
-        if (secret) headers['x-job-launcher-secret'] = secret;
-        const resp = await fetch(launcherUrl, { method: 'POST', headers });
-        const data = await resp.json().catch(() => ({}));
-        if (data.started) {
-          appendLine('[launcher] Bot started — it will join the room shortly.');
-        } else if (data.ok === true && data.started === false) {
-          appendLine('[launcher] Bot is already running.');
-        } else {
-          appendLine(`[launcher] Response: ${JSON.stringify(data)}`);
-        }
-      } catch (err) {
-        appendLine(`[launcher] Launch failed: ${err?.message || err}. (Check CORS — add * to Function App allowed origins if calling from a local file.)`);
-      }
-    }
-
     async function join() {
       const roomUrl = roomUrlInput.value.trim();
       const token = tokenInput.value.trim();
@@ -276,9 +244,6 @@
       }
 
       await leave();
-
-      // Fire launcher before joining — bot starts spinning up in the background.
-      launchBot();
 
       localStorage.setItem('daily_console_room_url', roomUrl);
       setStatus('Connecting...');
@@ -323,7 +288,7 @@
       });
     });
 
-    appendLine('[viewer] Ready. Join the same Daily room used by the bot to see mirrored console output.');
+    appendLine('[viewer] Ready. Join the same Daily room used by the bot to see mirrored console output. Bot start/stop is controlled by Daily webhooks.');
   </script>
 </body>
 </html>

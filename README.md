@@ -474,9 +474,11 @@ Add these GitHub Actions repository variables:
 - `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER` (example: `myregistry.azurecr.io`)
 - `IMAGE_REPOSITORY` (optional; defaults to `tts-conductor`)
 - `AZURE_LAUNCHER_FUNCTIONAPP_NAME` (required for launcher deployment workflow)
+- `DAILY_WEBHOOK_ROOM_NAME` (optional; recommended room filter for webhook events)
 
-Add this additional GitHub Actions secret for the launcher:
+Add these additional GitHub Actions secrets for the launcher:
 - `JOB_LAUNCHER_SHARED_SECRET`: Shared secret expected in `x-job-launcher-secret` header.
+- `DAILY_HOOK_SHARED_SECRET`: Shared secret expected by the Daily webhook endpoint.
 
 ### One-time Azure setup (before first deploy)
 
@@ -494,16 +496,22 @@ Ensure your Container Apps Job has the environment variables/secrets required by
 The `launcher/` function app exposes:
 - `POST /api/launch`: Starts one job execution only if no execution is already active.
 - `GET /api/status`: Reports launcher health and any currently active execution.
+- `POST /api/daily-hook`: Handles Daily webhook events and starts/stops executions.
 
 The launcher uses Managed Identity + ARM API to call:
 - `.../jobs/<job-name>/executions` (idempotency check)
 - `.../jobs/<job-name>/start` (start execution)
+- `.../jobs/<job-name>/stop/<execution-name>` (stop active execution)
 
 Required launcher app settings:
 - `AZURE_SUBSCRIPTION_ID`
 - `AZURE_RESOURCE_GROUP`
 - `AZURE_CONTAINER_JOB_NAME`
 - `JOB_LAUNCHER_SHARED_SECRET`
+- `DAILY_HOOK_SHARED_SECRET`
+
+Optional launcher app settings:
+- `DAILY_WEBHOOK_ROOM_NAME` (ignore webhook events that do not match this room)
 
 ### One-time launcher Azure setup
 
@@ -533,7 +541,29 @@ az functionapp create \
 
 Then deploy launcher code using the manual workflow `Deploy Launcher Function`.
 
-### Calling the launcher endpoint
+### Daily webhook automation (recommended)
+
+Configure Daily webhooks to call:
+
+```text
+https://<your-launcher-app>.azurewebsites.net/api/daily-hook
+```
+
+Set a webhook authentication header (recommended):
+- Header name: `x-daily-hook-secret`
+- Header value: same value as `DAILY_HOOK_SHARED_SECRET`
+
+Event mapping:
+- `meeting.started` (or `first_non_owner_join=true`) -> launcher starts the bot job.
+- `participant.left` and `meeting.ended` -> launcher stops active bot execution(s).
+
+If your webhook source cannot send custom headers, include `?secret=<daily-hook-secret>` in the webhook URL.
+
+You can force a specific action with query parameters when needed:
+- `.../api/daily-hook?action=start`
+- `.../api/daily-hook?action=stop`
+
+### Manual launch endpoint (optional)
 
 After deployment, call:
 
