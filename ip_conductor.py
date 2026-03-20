@@ -802,6 +802,7 @@ def run_console(
                 cartesia_voice_id=os.getenv("CARTESIA_VOICE_ID"),
                 elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY"),
                 elevenlabs_voice_id=os.getenv("ELEVENLABS_VOICE_ID"),
+                shutdown_when_room_empty=(headless and voice_transport == "daily"),
             )
             output.write_line(
                 "[voice] Starting voice command listener "
@@ -857,9 +858,27 @@ def run_console(
             if not voice:
                 output.write_line("[headless] Voice mode is disabled; exiting.")
                 return
+            if voice_listener is None:
+                output.write_line("[headless] Voice listener failed to start; exiting.")
+                return
+
+            if voice_transport == "daily":
+                output.write_line(
+                    "[headless] Auto-shutdown is enabled when the Daily room "
+                    f"stays empty for {voice_listener.empty_room_shutdown_seconds:.0f}s."
+                )
 
             output.write_line("[headless] Waiting for voice commands...")
             while True:
+                if voice_listener.shutdown_requested:
+                    reason = voice_listener.shutdown_reason or "Voice listener requested shutdown."
+                    output.write_line(f"[headless] {reason}")
+                    return
+
+                if not voice_listener.is_running:
+                    output.write_line("[headless] Voice listener stopped; exiting.")
+                    return
+
                 time.sleep(1)
 
         while True:

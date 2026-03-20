@@ -122,6 +122,15 @@ Run in headless mode (for container/cloud runtime):
 python ip_conductor.py --voice --voice-transport daily --headless
 ```
 
+In Daily + headless mode, the bot now auto-shuts down after the room is empty
+for a grace period (default: 45 seconds). This helps container platforms scale
+down when nobody is connected.
+
+You can change the grace period with:
+```bash
+IP_CONDUCTOR_EMPTY_ROOM_SHUTDOWN_SECONDS=90
+```
+
 Optional Daily viewer page:
 
 - Open `web/daily_console_viewer.html` in a browser.
@@ -480,6 +489,10 @@ The included `Dockerfile` starts the app in voice + Daily + headless mode:
 ```bash
 python ip_conductor.py --voice --voice-transport daily --headless
 ```
+
+When running this default command, the process exits automatically after all
+remote Daily participants leave and the room remains empty for the configured
+grace period (45s by default).
 
 Adjust the command in Azure Container Apps if you want a different transport or startup behavior.
 

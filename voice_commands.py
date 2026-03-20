@@ -349,6 +349,8 @@ class VoiceCommandListener:
         cartesia_voice_id: Optional[str] = None,
         elevenlabs_api_key: Optional[str] = None,
         elevenlabs_voice_id: Optional[str] = None,
+        shutdown_when_room_empty: bool = False,
+        empty_room_shutdown_seconds: Optional[float] = None,
     ):
         self._on_command = on_command
         self._model = model
@@ -365,6 +367,24 @@ class VoiceCommandListener:
         self._cartesia_voice_id = cartesia_voice_id or os.getenv("CARTESIA_VOICE_ID")
         self._elevenlabs_api_key = elevenlabs_api_key or os.getenv("ELEVENLABS_API_KEY")
         self._elevenlabs_voice_id = elevenlabs_voice_id or os.getenv("ELEVENLABS_VOICE_ID")
+        self._shutdown_when_room_empty = shutdown_when_room_empty
+
+        if empty_room_shutdown_seconds is None:
+            empty_room_shutdown_seconds = 45.0
+            timeout_value = os.getenv("IP_CONDUCTOR_EMPTY_ROOM_SHUTDOWN_SECONDS")
+            if timeout_value is not None and timeout_value.strip():
+                try:
+                    empty_room_shutdown_seconds = float(timeout_value)
+                except ValueError:
+                    logger.warning(
+                        "[VoiceCommands] Invalid "
+                        f"IP_CONDUCTOR_EMPTY_ROOM_SHUTDOWN_SECONDS={timeout_value!r}; "
+                        f"using {empty_room_shutdown_seconds:.0f}s."
+                    )
+
+        self._empty_room_shutdown_seconds = max(
+            0.0, float(empty_room_shutdown_seconds)
+        )
 
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -385,6 +405,12 @@ class VoiceCommandListener:
         self._active_utterance: Optional[dict[str, Any]] = None
         self._last_completed_utterance: Optional[dict[str, Any]] = None
         self._last_completed_at: float = 0.0
+        self._shutdown_requested = threading.Event()
+        self._shutdown_reason: Optional[str] = None
+        self._participant_lock = threading.Lock()
+        self._remote_participants: set[str] = set()
+        self._had_remote_participant = False
+        self._empty_room_shutdown_task: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -420,14 +446,45 @@ class VoiceCommandListener:
 
     def stop(self) -> None:
         """Signal the pipeline to stop and wait for the thread to exit."""
-        if self._loop and self._task:
-            asyncio.run_coroutine_threadsafe(
-                self._task.queue_frame(EndFrame()), self._loop
-            )
+        self._shutdown_requested.set()
+        self._queue_end_frame()
         if self._loop and self._daily_session:
-            asyncio.run_coroutine_threadsafe(self._daily_session.close(), self._loop)
+            try:
+                asyncio.run_coroutine_threadsafe(self._daily_session.close(), self._loop)
+            except RuntimeError:
+                pass
         if self._thread:
             self._thread.join(timeout=10)
+
+    @property
+    def shutdown_requested(self) -> bool:
+        """Whether listener requested process shutdown."""
+        return self._shutdown_requested.is_set()
+
+    @property
+    def shutdown_reason(self) -> Optional[str]:
+        """Reason supplied when listener requested shutdown."""
+        return self._shutdown_reason
+
+    @property
+    def is_running(self) -> bool:
+        """Whether the listener thread is currently alive."""
+        return bool(self._thread is not None and self._thread.is_alive())
+
+    @property
+    def empty_room_shutdown_seconds(self) -> float:
+        """Configured empty-room delay before shutdown in Daily mode."""
+        return self._empty_room_shutdown_seconds
+
+    def request_shutdown(self, reason: str) -> None:
+        """Request graceful pipeline shutdown with a diagnostic reason."""
+        if self._shutdown_requested.is_set():
+            return
+
+        self._shutdown_reason = reason
+        self._shutdown_requested.set()
+        logger.info(f"[VoiceCommands] Shutdown requested: {reason}")
+        self._queue_end_frame()
 
     def publish_app_message(self, payload: dict) -> None:
         """Publish a Daily app message when running in Daily transport mode."""
@@ -735,6 +792,123 @@ class VoiceCommandListener:
             self._ready.set()
             self._loop.close()
 
+    def _queue_end_frame(self) -> None:
+        """Queue EndFrame safely from either loop or non-loop threads."""
+        if not self._loop or not self._task:
+            return
+
+        async def _queue_end() -> None:
+            await self._task.queue_frame(EndFrame())
+
+        try:
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+
+            if running_loop is self._loop:
+                self._loop.create_task(_queue_end())
+                return
+
+            asyncio.run_coroutine_threadsafe(_queue_end(), self._loop)
+        except RuntimeError:
+            # The loop may already be closing; nothing else to do.
+            return
+
+    def _participant_id(self, participant: dict[str, Any]) -> str:
+        """Return a stable participant identifier when available."""
+        for key in ("session_id", "id", "user_id"):
+            value = participant.get(key)
+            if value:
+                return str(value)
+        return f"unknown-{time.monotonic_ns()}"
+
+    def _is_remote_participant(self, participant: Any) -> bool:
+        if not isinstance(participant, dict):
+            return False
+        return not bool(participant.get("local"))
+
+    def _mark_participant_joined(self, participant: Any) -> None:
+        """Track remote participants and cancel pending empty-room shutdown."""
+        if not self._is_remote_participant(participant):
+            return
+
+        participant_id = self._participant_id(cast(dict[str, Any], participant))
+        with self._participant_lock:
+            self._remote_participants.add(participant_id)
+            self._had_remote_participant = True
+            participant_count = len(self._remote_participants)
+
+        self._cancel_empty_room_shutdown()
+        logger.info(
+            "[VoiceCommands] Remote participant joined "
+            f"(id={participant_id}); active_remote={participant_count}"
+        )
+
+    def _mark_participant_left(self, participant: Any) -> None:
+        """Track remote departures and schedule room-empty shutdown if needed."""
+        if not self._is_remote_participant(participant):
+            return
+
+        participant_id = self._participant_id(cast(dict[str, Any], participant))
+        with self._participant_lock:
+            self._remote_participants.discard(participant_id)
+            participant_count = len(self._remote_participants)
+            should_schedule_shutdown = (
+                self._shutdown_when_room_empty
+                and self._had_remote_participant
+                and participant_count == 0
+            )
+
+        logger.info(
+            "[VoiceCommands] Remote participant left "
+            f"(id={participant_id}); active_remote={participant_count}"
+        )
+
+        if should_schedule_shutdown:
+            self._schedule_empty_room_shutdown()
+
+    def _cancel_empty_room_shutdown(self) -> None:
+        task = self._empty_room_shutdown_task
+        if task is None:
+            return
+
+        if not task.done():
+            task.cancel()
+        self._empty_room_shutdown_task = None
+
+    def _schedule_empty_room_shutdown(self) -> None:
+        if not self._shutdown_when_room_empty:
+            return
+
+        self._cancel_empty_room_shutdown()
+
+        if self._empty_room_shutdown_seconds <= 0:
+            self.request_shutdown("Daily room is empty; shutting down immediately.")
+            return
+
+        delay = self._empty_room_shutdown_seconds
+        logger.info(
+            "[VoiceCommands] Daily room empty; scheduling shutdown in "
+            f"{delay:.0f}s unless a participant rejoins."
+        )
+
+        async def _shutdown_if_still_empty() -> None:
+            try:
+                await asyncio.sleep(delay)
+                with self._participant_lock:
+                    still_empty = len(self._remote_participants) == 0
+                if still_empty:
+                    self.request_shutdown(
+                        "Daily room remained empty; terminating container process."
+                    )
+            except asyncio.CancelledError:
+                return
+            finally:
+                self._empty_room_shutdown_task = None
+
+        self._empty_room_shutdown_task = asyncio.create_task(_shutdown_if_still_empty())
+
     async def _run_pipeline(self) -> None:
         """Build and run the pipecat pipeline."""
         try:
@@ -755,6 +929,10 @@ class VoiceCommandListener:
                 await self._daily_session.close()
             self._daily_transport = None
             self._daily_joined = False
+            self._cancel_empty_room_shutdown()
+            with self._participant_lock:
+                self._remote_participants.clear()
+                self._had_remote_participant = False
             with self._utterance_lock:
                 self._pending_utterance = None
                 self._active_utterance = None
@@ -870,6 +1048,7 @@ class VoiceCommandListener:
         @transport.event_handler("on_joined")
         async def on_joined(_transport, _data):
             self._daily_joined = True
+            self._cancel_empty_room_shutdown()
             with self._pending_daily_lock:
                 pending = list(self._pending_daily_messages)
                 self._pending_daily_messages.clear()
@@ -890,10 +1069,15 @@ class VoiceCommandListener:
 
         @transport.event_handler("on_first_participant_joined")
         async def on_first_participant_joined(_transport, participant):
-            logger.info(
-                "[VoiceCommands] Daily participant joined: "
-                f"id={participant.get('id', 'unknown')}"
-            )
+            self._mark_participant_joined(participant)
+
+        @transport.event_handler("on_participant_joined")
+        async def on_participant_joined(_transport, participant):
+            self._mark_participant_joined(participant)
+
+        @transport.event_handler("on_participant_left")
+        async def on_participant_left(_transport, participant, _reason=None):
+            self._mark_participant_left(participant)
 
         if tts_active:
             return Pipeline(
