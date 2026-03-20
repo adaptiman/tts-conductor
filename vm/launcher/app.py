@@ -17,7 +17,7 @@ ACTIVE_CONTAINER_STATUSES = {
     "restarting",
     "paused",
 }
-DEFAULT_BOT_IMAGE = "crttsconductorprod.azurecr.io/tts-conductor:latest"
+DEFAULT_BOT_IMAGE = "acrttsconductorprod.azurecr.io/tts-conductor:latest"
 DEFAULT_BOT_COMMAND = "python ip_conductor.py --voice --voice-transport daily --headless"
 DEFAULT_BOT_CONTAINER_NAME = "tts-conductor-bot"
 DEFAULT_BOT_ENV_FILE = "/run/bot-env/.env"
