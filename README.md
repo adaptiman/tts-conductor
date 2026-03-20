@@ -455,6 +455,8 @@ This provides seamless integration without manual activation within VS Code.
 
 This repository now includes a combined CI/CD workflow at `.github/workflows/ci-cd-azure.yml`.
 
+For on-demand job launching, it also includes a manual deployment workflow at `.github/workflows/deploy-launcher-function.yml`.
+
 ### What the workflow does
 - Runs CI (`lint.sh --check`, Python compile smoke check, and unit tests if a `tests/` directory exists) on every push and pull request.
 - On pushes to `main`, builds and pushes a container image to Azure Container Registry (ACR), then updates an existing Azure Container Apps Job template to the new image.
@@ -471,6 +473,10 @@ Add these GitHub Actions repository variables:
 - `AZURE_CONTAINER_REGISTRY_NAME`
 - `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER` (example: `myregistry.azurecr.io`)
 - `IMAGE_REPOSITORY` (optional; defaults to `tts-conductor`)
+- `AZURE_LAUNCHER_FUNCTIONAPP_NAME` (required for launcher deployment workflow)
+
+Add this additional GitHub Actions secret for the launcher:
+- `JOB_LAUNCHER_SHARED_SECRET`: Shared secret expected in `x-job-launcher-secret` header.
 
 ### One-time Azure setup (before first deploy)
 
@@ -482,6 +488,63 @@ Create Azure resources once (resource group, ACR, and Container Apps environment
 4. Create the Container Apps Job once (manual trigger type). The workflow updates the image template on each deployment.
 
 Ensure your Container Apps Job has the environment variables/secrets required by this app (Instapaper credentials, Daily values, and selected TTS provider credentials).
+
+### Phase 5: HTTP launcher for on-demand starts
+
+The `launcher/` function app exposes:
+- `POST /api/launch`: Starts one job execution only if no execution is already active.
+- `GET /api/status`: Reports launcher health and any currently active execution.
+
+The launcher uses Managed Identity + ARM API to call:
+- `.../jobs/<job-name>/executions` (idempotency check)
+- `.../jobs/<job-name>/start` (start execution)
+
+Required launcher app settings:
+- `AZURE_SUBSCRIPTION_ID`
+- `AZURE_RESOURCE_GROUP`
+- `AZURE_CONTAINER_JOB_NAME`
+- `JOB_LAUNCHER_SHARED_SECRET`
+
+### One-time launcher Azure setup
+
+Create a Function App (Linux Consumption) once, then reuse it for deployments:
+
+```bash
+RG=rg-tts-conductor-prod
+LOCATION=southcentralus
+LAUNCHER_APP=func-tts-launcher-prod
+LAUNCHER_STORAGE=stttslauncherprod001
+
+az storage account create \
+   --resource-group "$RG" \
+   --name "$LAUNCHER_STORAGE" \
+   --location "$LOCATION" \
+   --sku Standard_LRS
+
+az functionapp create \
+   --resource-group "$RG" \
+   --consumption-plan-location "$LOCATION" \
+   --name "$LAUNCHER_APP" \
+   --storage-account "$LAUNCHER_STORAGE" \
+   --runtime python \
+   --runtime-version 3.11 \
+   --functions-version 4
+```
+
+Then deploy launcher code using the manual workflow `Deploy Launcher Function`.
+
+### Calling the launcher endpoint
+
+After deployment, call:
+
+```bash
+curl -X POST "https://<your-launcher-app>.azurewebsites.net/api/launch" \
+   -H "x-job-launcher-secret: <your-shared-secret>"
+```
+
+Response behavior:
+- Starts new execution (`started: true`) when no active run exists.
+- Returns `started: false` with the active execution metadata when one is already running.
 
 ### Container runtime defaults
 
