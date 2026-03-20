@@ -541,6 +541,25 @@ If NSG ingress is missing, allow TCP 8443 on the VM NSG.
 
 TODO: move runtime secrets out of plain `.env` into a controlled secret solution (for example Key Vault or Docker Swarm/Kubernetes secrets).
 
+### Bot lifecycle mode (TODO: confirm in production)
+
+Expected production behavior for cost + responsiveness:
+- `tts-launcher` and `tts-launcher-proxy` are always running on the VM.
+- The bot container is **not** always in the Daily room.
+- The bot starts when a Daily webhook start event is received (`/api/daily-hook` -> `/launch`).
+- After the last non-bot participant leaves, the bot exits after the in-app grace window (currently 45 seconds).
+- The VM launcher stack stays up and ready for the next webhook event.
+
+Why this mode:
+- Avoids Azure cold start / delayed launcher availability.
+- Avoids unnecessary Daily room-active minutes (and cost) when no humans are present.
+
+Verification checklist (mark complete after validating in prod):
+- [ ] Join room -> webhook received -> bot joins promptly.
+- [ ] Last human leaves -> bot exits after ~45s.
+- [ ] Launcher services remain healthy on VM after bot exits.
+- [ ] Next human join triggers a fresh bot start.
+
 ### One-time launcher Azure setup
 
 Create a Function App (Linux Consumption) once, then reuse it for deployments:
