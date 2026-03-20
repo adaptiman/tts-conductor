@@ -48,11 +48,6 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${{ secrets.DAILY_HOOK_SHARED_SECRET }}" ]; then
-            echo "::error::Missing repository secret DAILY_HOOK_SHARED_SECRET."
-            exit 1
-          fi
-
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -82,7 +77,8 @@ jobs:
               AZURE_RESOURCE_GROUP="${AZURE_RESOURCE_GROUP}" \
               AZURE_CONTAINER_JOB_NAME="${AZURE_CONTAINER_JOB_NAME}" \
               JOB_LAUNCHER_SHARED_SECRET="${{ secrets.JOB_LAUNCHER_SHARED_SECRET }}" \
-              DAILY_HOOK_SHARED_SECRET="${{ secrets.DAILY_HOOK_SHARED_SECRET }}" \
+              DAILY_HOOK_SHARED_SECRET="" \
+              DAILY_HOOK_HMAC_SECRET="" \
               DAILY_WEBHOOK_ROOM_NAME="${DAILY_WEBHOOK_ROOM_NAME:-}"
 
       - name: Deploy launcher function code
