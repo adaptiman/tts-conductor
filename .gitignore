@@ -52,6 +52,9 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Azure Functions packages (pre-installed by CI)
+.python_packages/
+
 # Virtual environments
 .env
 .venv

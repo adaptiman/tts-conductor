@@ -47,6 +47,17 @@ jobs:
             exit 1
           fi
 
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          pip install \
+            --target=./launcher/.python_packages/lib/site-packages \
+            -r ./launcher/requirements.txt
+
       - name: Azure login
         uses: azure/login@v2
         with:
