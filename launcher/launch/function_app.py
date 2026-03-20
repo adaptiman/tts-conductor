@@ -12,9 +12,7 @@ from typing import Any, Optional
 
 import azure.functions as func
 import requests
-from azure.identity import ManagedIdentityCredential
 
-ARM_SCOPE = "https://management.azure.com/.default"
 ARM_API_VERSION = "2023-05-01"
 AUTH_HEADER_NAME = "x-job-launcher-secret"
 ACTIVE_EXECUTION_STATUSES = {
@@ -74,11 +72,26 @@ def _management_base_url(config: LauncherConfig) -> str:
     )
 
 
+def _get_arm_token() -> str:
+    """Obtain an ARM access token from the Managed Identity endpoint."""
+    endpoint = os.environ["IDENTITY_ENDPOINT"]
+    header_value = os.environ["IDENTITY_HEADER"]
+    resp = requests.get(
+        endpoint,
+        params={
+            "resource": "https://management.azure.com/",
+            "api-version": "2019-08-01",
+        },
+        headers={"X-IDENTITY-HEADER": header_value},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
 def _management_headers() -> dict[str, str]:
-    credential = ManagedIdentityCredential()
-    token = credential.get_token(ARM_SCOPE)
     return {
-        "Authorization": f"Bearer {token.token}",
+        "Authorization": f"Bearer {_get_arm_token()}",
         "Content-Type": "application/json",
     }
 
@@ -149,8 +162,7 @@ def _is_authorized(request: Any, config: LauncherConfig) -> bool:
     return hmac.compare_digest(provided, config.shared_secret)
 
 
-@func.route(route="launch", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
-def launch_job(request: func.HttpRequest) -> func.HttpResponse:
+def main(req: func.HttpRequest) -> func.HttpResponse:
     """Start one job execution if no active execution already exists."""
     try:
         config = _load_config()
@@ -164,7 +176,7 @@ def launch_job(request: func.HttpRequest) -> func.HttpResponse:
             status_code=500,
         )
 
-    if not _is_authorized(request, config):
+    if not _is_authorized(req, config):
         return _json_response(
             {
                 "ok": False,
