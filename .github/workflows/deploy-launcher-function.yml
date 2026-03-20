@@ -100,9 +100,7 @@ jobs:
       - name: Deploy launcher function code
         run: |
           set -euo pipefail
-          az functionapp deploy \
+          az functionapp deployment source config-zip \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
             --name "${AZURE_LAUNCHER_FUNCTIONAPP_NAME}" \
-            --src-path ./launcher.zip \
-            --type zip \
-            --clean true
+            --src-path ./launcher.zip
