@@ -15,6 +15,7 @@ _TTS_SKIP_RE = re.compile(
     r"|^\[voice\]"                  # voice-mode status
     r"|^\[mirror\]"                 # mirror status
     r"|^\[tts\]"                    # TTS status
+    r"|^\[headless\]"               # headless-mode status
 )
 
 
