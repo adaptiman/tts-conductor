@@ -51,6 +51,7 @@ class HookConfig:
     webhook_room_name: str
     launcher_timeout_seconds: float
     stop_via_webhook_enabled: bool
+    start_on_unrecognized_event: bool
 
 
 def _load_config() -> HookConfig:
@@ -88,6 +89,9 @@ def _load_config() -> HookConfig:
         launcher_timeout_seconds=timeout_seconds,
         stop_via_webhook_enabled=_as_bool(
             os.getenv("DAILY_HOOK_ENABLE_STOP_ACTION", "false")
+        ),
+        start_on_unrecognized_event=_as_bool(
+            os.getenv("DAILY_HOOK_START_ON_UNRECOGNIZED_EVENT", "true")
         ),
     )
 
@@ -445,6 +449,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             )
 
     action, action_source = _resolve_action(req, payload, config)
+    if not action and config.start_on_unrecognized_event:
+        action = "start"
+        action_source = f"fallback:{action_source or 'unrecognized_event'}"
+
     if not action:
         return _json_response(
             {
