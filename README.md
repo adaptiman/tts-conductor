@@ -1,4 +1,4 @@
-# Instapaper Reader Console App
+# Instapaper Reader Voice Controlled App
 
 A Python Speech-to-Text / Text-to-Speech (STT-TTS) application with console commands for reading and managing Instapaper articles.
 
@@ -7,7 +7,7 @@ A Python Speech-to-Text / Text-to-Speech (STT-TTS) application with console comm
 The application is built with a modular design:
 
 - **`article_manager.py`** - Contains the `ArticleManager` class with all Instapaper functionality
-- **`ip_conductor.py`** - Console interface that uses the `ArticleManager` class
+- **`ip_conductor.py`** - STT/TTS and console interface that uses the `ArticleManager` class
 - **`example_usage.py`** - Demonstrates how to use `ArticleManager` in other programs
 
 This design allows you to easily integrate Instapaper functionality into other Python applications by importing the `ArticleManager` class.
@@ -128,7 +128,7 @@ down when nobody is connected.
 
 You can change the grace period with:
 ```bash
-IP_CONDUCTOR_EMPTY_ROOM_SHUTDOWN_SECONDS=90
+EMPTY_ROOM_SHUTDOWN_SECONDS=90
 ```
 
 Optional Daily viewer page:

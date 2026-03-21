@@ -371,14 +371,14 @@ class VoiceCommandListener:
 
         if empty_room_shutdown_seconds is None:
             empty_room_shutdown_seconds = 45.0
-            timeout_value = os.getenv("IP_CONDUCTOR_EMPTY_ROOM_SHUTDOWN_SECONDS")
+            timeout_value = os.getenv("EMPTY_ROOM_SHUTDOWN_SECONDS")
             if timeout_value is not None and timeout_value.strip():
                 try:
                     empty_room_shutdown_seconds = float(timeout_value)
                 except ValueError:
                     logger.warning(
                         "[VoiceCommands] Invalid "
-                        f"IP_CONDUCTOR_EMPTY_ROOM_SHUTDOWN_SECONDS={timeout_value!r}; "
+                        f"EMPTY_ROOM_SHUTDOWN_SECONDS={timeout_value!r}; "
                         f"using {empty_room_shutdown_seconds:.0f}s."
                     )
 
