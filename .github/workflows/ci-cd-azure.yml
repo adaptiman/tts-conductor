@@ -1,4 +1,4 @@
-name: CI and Azure Deploy
+name: CI and ACR Publish
 
 on:
   push:
@@ -48,18 +48,16 @@ jobs:
             echo "No tests directory found; skipping unit tests."
           fi
 
-  deploy_job_template:
-    name: Update Azure Container Apps Job Template
+  publish_image:
+    name: Build and Push ACR Image
     runs-on: ubuntu-latest
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AZURE_CONTAINER_JOB_NAME != ''
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AZURE_CONTAINER_REGISTRY_NAME != '' && vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER != ''
     environment: production
     permissions:
       contents: read
       id-token: write
     env:
-      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-      AZURE_CONTAINER_JOB_NAME: ${{ vars.AZURE_CONTAINER_JOB_NAME }}
       AZURE_CONTAINER_REGISTRY_NAME: ${{ vars.AZURE_CONTAINER_REGISTRY_NAME }}
       AZURE_CONTAINER_REGISTRY_LOGIN_SERVER: ${{ vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER }}
       IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
@@ -72,8 +70,6 @@ jobs:
         run: |
           set -euo pipefail
           required=(
-            AZURE_RESOURCE_GROUP
-            AZURE_CONTAINER_JOB_NAME
             AZURE_CONTAINER_REGISTRY_NAME
             AZURE_CONTAINER_REGISTRY_LOGIN_SERVER
           )
@@ -90,13 +86,7 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Ensure Container Apps CLI extension
-        run: |
-          set -euo pipefail
-          az extension add --name containerapp --upgrade
-
       - name: Build and push container image
-        id: build
         run: |
           set -euo pipefail
           IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-tts-conductor}"
@@ -108,14 +98,3 @@ jobs:
           docker build -t "${IMAGE_URI}" -t "${IMAGE_LATEST_URI}" .
           docker push "${IMAGE_URI}"
           docker push "${IMAGE_LATEST_URI}"
-
-          echo "image_uri=${IMAGE_URI}" >> "${GITHUB_OUTPUT}"
-
-      - name: Update image on Container Apps Job template
-        run: |
-          set -euo pipefail
-          # This updates the job template only. It does not start an execution.
-          az containerapp job update \
-            --name "${AZURE_CONTAINER_JOB_NAME}" \
-            --resource-group "${AZURE_RESOURCE_GROUP}" \
-            --image "${{ steps.build.outputs.image_uri }}"
