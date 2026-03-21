@@ -917,7 +917,14 @@ class VoiceCommandListener:
             else:
                 pipeline = self._build_local_pipeline()
 
-            self._task = PipelineTask(pipeline)
+            task_kwargs: dict[str, Any] = {}
+            if self._transport_mode == "daily":
+                # In Daily mode, room idleness is handled by participant-aware
+                # shutdown logic. Disable generic pipeline idle cancellation.
+                task_kwargs["cancel_on_idle_timeout"] = False
+                task_kwargs["idle_timeout_secs"] = None
+
+            self._task = PipelineTask(pipeline, **task_kwargs)
 
             # Signal that setup is complete before blocking on runner.run().
             self._ready.set()
