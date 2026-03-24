@@ -2,6 +2,8 @@
 
 set -Eeuo pipefail
 
+VERSION="1.1.0"
+
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
@@ -34,6 +36,8 @@ TARGET_BRANCH="${1:-main}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-https://localhost:8443/health}"
 STATUS_URL="${STATUS_URL:-https://localhost:8443/status}"
 EXPECTED_CONTAINERS=(tts-launcher tts-launcher-proxy)
+
+log "update-production.sh version ${VERSION}"
 
 require_command git
 require_command docker
