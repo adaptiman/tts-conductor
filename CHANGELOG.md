@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.8.0324.2 - 2026-03-24
+
+### Added
+- Added a production deployment runbook section to README.md with manual commands for:
+  - updating the repo to a release tag
+  - rebuilding and restarting via Docker Compose
+  - rebuilding and restarting via plain Docker
+  - post-deploy verification via docker ps and logs
+
+### Notes
+- This patch release packages documentation-only updates after 0.8.0324.1.
+
 ## 0.8.0324.1 - 2026-03-24
 
 ### Added
