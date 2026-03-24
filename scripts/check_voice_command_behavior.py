@@ -12,15 +12,15 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from pipecat.frames.frames import (
+from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     InterimTranscriptionFrame,
     TranscriptionFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 
-from voice_commands import (
+from voice_commands import (  # noqa: E402
     BotSpeakingUserMuteStrategy,
     StrategyUserMuteProcessor,
     VoiceCommandProcessor,
