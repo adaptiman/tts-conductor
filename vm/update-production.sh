@@ -61,11 +61,17 @@ git checkout "$TARGET_BRANCH"
 log "Pulling latest fast-forward changes"
 git pull --ff-only origin "$TARGET_BRANCH"
 
-set -a
-source "$COMPOSE_ENV_FILE"
-set +a
+# Safely read a single key from the .env file without sourcing it as a shell
+# script (sourcing causes unquoted multi-word values like BOT_COMMAND to be
+# executed as commands).
+_env_get() {
+  local key="$1"
+  grep -E "^${key}=" "$COMPOSE_ENV_FILE" | head -1 | cut -d= -f2- | sed "s/^['\"]//;s/['\"]$//"
+}
 
+BOT_IMAGE="$(_env_get BOT_IMAGE)"
 BOT_IMAGE="${BOT_IMAGE:-acrttsconductorprod.azurecr.io/tts-conductor:latest}"
+JOB_LAUNCHER_SHARED_SECRET="$(_env_get JOB_LAUNCHER_SHARED_SECRET)"
 
 log "Pulling latest bot image: $BOT_IMAGE"
 docker pull "$BOT_IMAGE"
