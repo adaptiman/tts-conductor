@@ -308,6 +308,50 @@ If you see repeated `Invalid RTVI transport message` warnings:
 - Test with a clean room and a single participant first.
 - Confirm no external client is sending malformed RTVI payloads without required fields.
 
+### Release Deployment (Production)
+
+Use these steps to deploy a tagged release to production.
+
+1. Update the repo and check out the release tag:
+
+```bash
+cd /path/to/tts-conductor
+git fetch origin --tags
+git checkout main
+git pull --ff-only origin main
+git checkout 0.8.0324.1
+```
+
+2. Rebuild and restart with Docker Compose (if you use `vm/docker-compose.yml`):
+
+```bash
+cd /path/to/tts-conductor
+docker compose -f vm/docker-compose.yml down
+docker compose -f vm/docker-compose.yml build --no-cache
+docker compose -f vm/docker-compose.yml up -d
+```
+
+3. Rebuild and restart with plain Docker (if you run a single container):
+
+```bash
+cd /path/to/tts-conductor
+docker build -t tts-conductor:0.8.0324.1 .
+docker stop tts-conductor || true
+docker rm tts-conductor || true
+docker run -d \
+   --name tts-conductor \
+   --restart unless-stopped \
+   --env-file .env \
+   tts-conductor:0.8.0324.1
+```
+
+4. Verify the deployment:
+
+```bash
+docker ps
+docker logs --tail=200 tts-conductor
+```
+
 ### Available Commands
 
 #### Article Management
