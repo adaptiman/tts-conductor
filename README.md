@@ -352,6 +352,57 @@ docker ps
 docker logs --tail=200 tts-conductor
 ```
 
+### Configuration Profiles (Docker Launcher)
+
+For VM launcher deployments, runtime behavior is controlled by two settings in
+`vm/docker-compose.yml`:
+
+- `BOT_COMMAND`: CLI flags passed to `ip_conductor.py`.
+- `BOT_ENV_SOURCE`: host env file mounted into launcher as bot runtime env.
+
+Recommended profile files on the host:
+
+- `.env.prod-balanced`
+- `.env.prod-safe`
+- `.env.prod-fast`
+
+Set `BOT_ENV_SOURCE` to one of those files and set `BOT_COMMAND` to one of the
+presets below.
+
+Balanced profile (default operational mode):
+
+```bash
+BOT_COMMAND=python ip_conductor.py --voice --voice-transport daily --headless --turn-profile balanced --barge-in-mode commands --command-emit-source turn_stop --metrics
+```
+
+Safe profile (fewer accidental triggers):
+
+```bash
+BOT_COMMAND=python ip_conductor.py --voice --voice-transport daily --headless --turn-profile safe --barge-in-mode off --command-emit-source turn_stop --metrics
+```
+
+Fast profile (lowest command latency):
+
+```bash
+BOT_COMMAND=python ip_conductor.py --voice --voice-transport daily --headless --turn-profile fast --barge-in-mode commands --command-emit-source interim --metrics
+```
+
+Example env source selection:
+
+```bash
+BOT_ENV_SOURCE=../.env.prod-safe
+```
+
+Apply launcher configuration changes:
+
+```bash
+cd /path/to/tts-conductor
+docker compose -f vm/docker-compose.yml up -d --build --force-recreate tts-launcher
+```
+
+Then trigger launch/relaunch through the launcher endpoint/workflow so the bot
+container is recreated with the updated command and environment.
+
 ### Available Commands
 
 #### Article Management
