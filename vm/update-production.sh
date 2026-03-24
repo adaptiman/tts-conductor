@@ -19,6 +19,23 @@ require_command() {
   fi
 }
 
+acr_registry_name_from_image() {
+  local image_ref="$1"
+  local registry_host
+
+  registry_host="${image_ref%%/*}"
+  if [[ "$registry_host" != *.* ]]; then
+    return 1
+  fi
+
+  if [[ "$registry_host" == *.azurecr.io ]]; then
+    printf '%s\n' "${registry_host%%.azurecr.io}"
+    return 0
+  fi
+
+  return 1
+}
+
 if docker compose version >/dev/null 2>&1; then
   COMPOSE_CMD=(docker compose)
 elif command -v docker-compose >/dev/null 2>&1; then
@@ -72,6 +89,12 @@ _env_get() {
 BOT_IMAGE="$(_env_get BOT_IMAGE)"
 BOT_IMAGE="${BOT_IMAGE:-acrttsconductorprod.azurecr.io/tts-conductor:latest}"
 JOB_LAUNCHER_SHARED_SECRET="$(_env_get JOB_LAUNCHER_SHARED_SECRET)"
+
+if ACR_NAME="$(acr_registry_name_from_image "$BOT_IMAGE")"; then
+  require_command az
+  log "Logging into Azure Container Registry: $ACR_NAME"
+  az acr login --name "$ACR_NAME" >/dev/null
+fi
 
 log "Pulling latest bot image: $BOT_IMAGE"
 docker pull "$BOT_IMAGE"
