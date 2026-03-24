@@ -2,7 +2,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -17,6 +17,26 @@ require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
     fail "Required command not found: $1"
   fi
+}
+
+docker_image_id() {
+  local image_ref="$1"
+  docker image inspect "$image_ref" --format '{{.Id}}' 2>/dev/null || true
+}
+
+launcher_get() {
+  local endpoint="$1"
+  curl --silent --show-error --fail --max-time 20 --insecure \
+    -H "x-job-launcher-secret: ${JOB_LAUNCHER_SHARED_SECRET}" \
+    "$endpoint"
+}
+
+launcher_post() {
+  local endpoint="$1"
+  curl --silent --show-error --fail --max-time 20 --insecure \
+    -X POST \
+    -H "x-job-launcher-secret: ${JOB_LAUNCHER_SHARED_SECRET}" \
+    "$endpoint"
 }
 
 acr_registry_name_from_image() {
@@ -52,6 +72,8 @@ COMPOSE_ENV_FILE="$VM_DIR/.env"
 TARGET_BRANCH="${1:-main}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-https://localhost:8443/health}"
 STATUS_URL="${STATUS_URL:-https://localhost:8443/status}"
+LAUNCH_URL="${LAUNCH_URL:-https://localhost:8443/launch}"
+STOP_URL="${STOP_URL:-https://localhost:8443/stop}"
 EXPECTED_CONTAINERS=(tts-launcher tts-launcher-proxy)
 
 log "update-production.sh version ${VERSION}"
@@ -69,6 +91,8 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   fail "Git working tree is not clean. Commit, stash, or discard local changes before running this script."
 fi
 
+PRE_PULL_HEAD="$(git rev-parse HEAD)"
+
 log "Fetching latest changes from origin"
 git fetch origin "$TARGET_BRANCH"
 
@@ -77,6 +101,15 @@ git checkout "$TARGET_BRANCH"
 
 log "Pulling latest fast-forward changes"
 git pull --ff-only origin "$TARGET_BRANCH"
+
+POST_PULL_HEAD="$(git rev-parse HEAD)"
+REPO_CHANGED=0
+if [[ "$PRE_PULL_HEAD" != "$POST_PULL_HEAD" ]]; then
+  REPO_CHANGED=1
+  log "Repository updated: ${PRE_PULL_HEAD:0:12} -> ${POST_PULL_HEAD:0:12}"
+else
+  log "No repository update detected"
+fi
 
 # Safely read a single key from the .env file without sourcing it as a shell
 # script (sourcing causes unquoted multi-word values like BOT_COMMAND to be
@@ -90,6 +123,8 @@ BOT_IMAGE="$(_env_get BOT_IMAGE)"
 BOT_IMAGE="${BOT_IMAGE:-acrttsconductorprod.azurecr.io/tts-conductor:latest}"
 JOB_LAUNCHER_SHARED_SECRET="$(_env_get JOB_LAUNCHER_SHARED_SECRET)"
 
+PRE_PULL_BOT_IMAGE_ID="$(docker_image_id "$BOT_IMAGE")"
+
 if ACR_NAME="$(acr_registry_name_from_image "$BOT_IMAGE")"; then
   require_command az
   log "Logging into Azure Container Registry: $ACR_NAME"
@@ -99,14 +134,36 @@ fi
 log "Pulling latest bot image: $BOT_IMAGE"
 docker pull "$BOT_IMAGE"
 
-log "Pulling compose-managed images"
-"${COMPOSE_CMD[@]}" --env-file "$COMPOSE_ENV_FILE" -f "$COMPOSE_FILE" pull
+POST_PULL_BOT_IMAGE_ID="$(docker_image_id "$BOT_IMAGE")"
+BOT_IMAGE_CHANGED=0
+if [[ -n "$POST_PULL_BOT_IMAGE_ID" && "$PRE_PULL_BOT_IMAGE_ID" != "$POST_PULL_BOT_IMAGE_ID" ]]; then
+  BOT_IMAGE_CHANGED=1
+  if [[ -n "$PRE_PULL_BOT_IMAGE_ID" ]]; then
+    log "Bot image updated: ${PRE_PULL_BOT_IMAGE_ID:0:19} -> ${POST_PULL_BOT_IMAGE_ID:0:19}"
+  else
+    log "Bot image downloaded locally: ${POST_PULL_BOT_IMAGE_ID:0:19}"
+  fi
+else
+  log "No bot image update detected"
+fi
 
-log "Rebuilding compose services"
-"${COMPOSE_CMD[@]}" --env-file "$COMPOSE_ENV_FILE" -f "$COMPOSE_FILE" build --pull
+if [[ "$REPO_CHANGED" -eq 0 && "$BOT_IMAGE_CHANGED" -eq 0 ]]; then
+  log "No repository or bot image update detected; skipping rebuild and restart"
+  exit 0
+fi
 
-log "Restarting compose stack"
-"${COMPOSE_CMD[@]}" --env-file "$COMPOSE_ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans
+if [[ "$REPO_CHANGED" -eq 1 ]]; then
+  log "Pulling compose-managed images"
+  "${COMPOSE_CMD[@]}" --env-file "$COMPOSE_ENV_FILE" -f "$COMPOSE_FILE" pull
+
+  log "Rebuilding compose services"
+  "${COMPOSE_CMD[@]}" --env-file "$COMPOSE_ENV_FILE" -f "$COMPOSE_FILE" build --pull
+
+  log "Restarting compose stack"
+  "${COMPOSE_CMD[@]}" --env-file "$COMPOSE_ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans
+else
+  log "Skipping compose rebuild because repository did not change"
+fi
 
 for container_name in "${EXPECTED_CONTAINERS[@]}"; do
   status="$(docker inspect -f '{{.State.Status}}' "$container_name" 2>/dev/null || true)"
@@ -125,9 +182,19 @@ log "Launcher health check passed: $health_payload"
 
 if [[ -n "${JOB_LAUNCHER_SHARED_SECRET:-}" ]]; then
   log "Checking launcher status endpoint"
-  status_payload="$(curl --silent --show-error --fail --max-time 20 --insecure \
-    -H "x-job-launcher-secret: ${JOB_LAUNCHER_SHARED_SECRET}" \
-    "$STATUS_URL")"
+  status_payload="$(launcher_get "$STATUS_URL")"
+
+  if [[ "$BOT_IMAGE_CHANGED" -eq 1 && "$status_payload" == *'"running":true'* ]]; then
+    log "Restarting active bot container so it uses the updated image"
+    stop_payload="$(launcher_post "$STOP_URL")"
+    log "Launcher stop response: $stop_payload"
+    launch_payload="$(launcher_post "$LAUNCH_URL")"
+    log "Launcher launch response: $launch_payload"
+    status_payload="$(launcher_get "$STATUS_URL")"
+  elif [[ "$BOT_IMAGE_CHANGED" -eq 1 ]]; then
+    log "Bot image updated, but no active bot container is running; future launches will use the new image"
+  fi
+
   log "Launcher status response: $status_payload"
 else
   log "Skipping launcher status endpoint check because JOB_LAUNCHER_SHARED_SECRET is not set"
