@@ -78,7 +78,6 @@ venv.bak/
 .env.test.local
 .env.production.local
 vm/.env
-vm/update-production.sh
 
 # OS generated files
 .DS_Store
