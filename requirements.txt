@@ -44,7 +44,8 @@ wrapt==2.0.1
 
 # Voice command support (STT via pipecat + faster-whisper)
 # System requirement: portaudio19-dev  (sudo apt install portaudio19-dev)
-pipecat-ai[local,whisper,websockets-base,elevenlabs]==0.0.105
+# Required for newer turn/mute strategy and failover APIs.
+pipecat-ai[local,whisper,websockets-base,elevenlabs]==0.0.106
 websockets==15.0.1
 
 # Remote voice transport (Daily WebRTC + Deepgram STT)

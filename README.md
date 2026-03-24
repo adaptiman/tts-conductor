@@ -122,6 +122,34 @@ Run in headless mode (for container/cloud runtime):
 python ip_conductor.py --voice --voice-transport daily --headless
 ```
 
+### CLI Reference
+
+Use `python ip_conductor.py --help` to view the current command-line options.
+
+Available options:
+
+- `-h, --help`
+- `--voice`
+- `--voice-transport {local,daily}`
+- `--tts-vendor {cartesia,elevenlabs}`
+- `--turn-profile {fast,balanced,safe}`
+- `--barge-in-mode {off,commands,always}`
+- `--command-emit-source {interim,final,turn_stop}`
+- `--idle-timeout-seconds IDLE_TIMEOUT_SECONDS`
+- `--stt-provider {deepgram,whisper}`
+- `--stt-keepalive-seconds STT_KEEPALIVE_SECONDS`
+- `--stt-endpointing-ms STT_ENDPOINTING_MS`
+- `--stt-utterance-end-ms STT_UTTERANCE_END_MS`
+- `--tts-concurrency TTS_CONCURRENCY`
+- `--tts-text-aggregation {token,sentence}`
+- `--failover | --no-failover`
+- `--failover-chain FAILOVER_CHAIN`
+- `--metrics | --no-metrics`
+- `--daily-room-url DAILY_ROOM_URL`
+- `--daily-token DAILY_TOKEN`
+- `--headless`
+- `--list-audio-devices`
+
 In Daily + headless mode, the bot now auto-shuts down after the room is empty
 for a grace period (default: 45 seconds). This helps container platforms scale
 down when nobody is connected.
@@ -135,6 +163,150 @@ Optional Daily viewer page:
 
 - Open `web/daily_console_viewer.html` in a browser.
 - Enter the same Daily room URL/token to view mirrored console lines and hear room audio.
+
+### Turn Strategy and Latency Tuning
+
+The voice command UX does **not** require a wake phrase. You continue saying
+normal commands such as `next`, `pause`, `read`, and `stop`.
+
+Tune command timing and interruption behavior with environment variables:
+
+```bash
+# Turn handling
+IP_CONDUCTOR_TURN_PROFILE=balanced            # fast | balanced | safe
+IP_CONDUCTOR_COMMAND_EMIT_SOURCE=turn_stop    # interim | final | turn_stop
+IP_CONDUCTOR_BARGE_IN_MODE=commands           # off | commands | always
+IP_CONDUCTOR_IDLE_TIMEOUT_SECONDS=120
+
+# STT tuning
+IP_CONDUCTOR_STT_PROVIDER=deepgram            # deepgram | whisper
+IP_CONDUCTOR_STT_KEEPALIVE_SECONDS=20
+IP_CONDUCTOR_STT_ENDPOINTING_MS=250
+IP_CONDUCTOR_STT_UTTERANCE_END_MS=700
+
+# TTS tuning
+IP_CONDUCTOR_TTS_CONCURRENCY=1
+IP_CONDUCTOR_TTS_TEXT_AGGREGATION_MODE=sentence   # token | sentence
+
+# Failover + telemetry
+IP_CONDUCTOR_FAILOVER_ENABLED=true
+IP_CONDUCTOR_FAILOVER_CHAIN=deepgram,whisper
+IP_CONDUCTOR_METRICS_ENABLED=true
+```
+
+Equivalent CLI flags are available when launching `ip_conductor.py`:
+
+```bash
+--turn-profile fast|balanced|safe
+--barge-in-mode off|commands|always
+--command-emit-source interim|final|turn_stop
+--idle-timeout-seconds <int>
+--stt-provider deepgram|whisper
+--stt-keepalive-seconds <int>
+--stt-endpointing-ms <int>
+--stt-utterance-end-ms <int>
+--tts-concurrency <int>
+--tts-text-aggregation token|sentence
+--failover / --no-failover
+--failover-chain deepgram,whisper
+--metrics / --no-metrics
+```
+
+Examples:
+
+```bash
+# Balanced defaults, command-only barge-in
+python ip_conductor.py --voice --voice-transport daily --barge-in-mode commands
+
+# Fast reaction profile with interim command emission
+python ip_conductor.py --voice --voice-transport daily --turn-profile fast --command-emit-source interim
+
+# Conservative behavior (no interruption while speaking)
+python ip_conductor.py --voice --voice-transport daily --barge-in-mode off --turn-profile safe
+```
+
+Troubleshooting:
+
+- If commands feel delayed, try `--turn-profile fast` or `--command-emit-source interim`.
+- If commands trigger too often, try `--turn-profile safe` and `--command-emit-source turn_stop`.
+- If speech gets cut off too often, use `--barge-in-mode off`.
+
+### Daily Validation Runbook
+
+Use this checklist to validate Daily transport behavior in a controlled session.
+For release sign-off, use the copy-paste QA checklist in
+`docs/voice-daily-validation-checklist.md`.
+
+Prerequisites:
+
+- A valid Daily room URL and token.
+- `DEEPGRAM_API_KEY` set.
+- If you want room speech output, valid TTS credentials for the selected vendor.
+
+Recommended validation commands:
+
+```bash
+# Balanced profile (default operational mode)
+python ip_conductor.py \
+   --voice \
+   --voice-transport daily \
+   --turn-profile balanced \
+   --barge-in-mode commands \
+   --command-emit-source turn_stop \
+   --metrics
+
+# Safe profile (fewer accidental turn transitions)
+python ip_conductor.py \
+   --voice \
+   --voice-transport daily \
+   --turn-profile safe \
+   --barge-in-mode off \
+   --command-emit-source turn_stop \
+   --metrics
+```
+
+Expected signals during validation:
+
+- Startup shows voice listener initialization with Daily transport.
+- Speaking commands emits `[voice] <command>` lines.
+- Metrics lines (`[metrics] ...`) appear in logs when enabled.
+- In safe profile, command acceptance should feel more conservative.
+
+Suggested spoken validation script:
+
+1. `read`
+2. `pause`
+3. `continue`
+4. `back two`
+5. `forward one`
+6. `repeat`
+7. `highlight`
+8. `stop`
+
+Optional failover drill:
+
+- Start with `IP_CONDUCTOR_FAILOVER_ENABLED=true` and `IP_CONDUCTOR_FAILOVER_CHAIN=deepgram,whisper`.
+- Force a primary STT failure (for example, temporarily revoke key/network access).
+- Confirm logs include `service.stt_failover_switch` metric and service switch warning.
+
+Capture logs for review:
+
+```bash
+python ip_conductor.py --voice --voice-transport daily --turn-profile balanced --metrics \
+   2>&1 | tee /tmp/ip-conductor-daily.log
+```
+
+Quick log checks:
+
+```bash
+grep -E "\[voice\]|\[metrics\]|service\.stt_failover_switch|Invalid RTVI transport message" /tmp/ip-conductor-daily.log
+```
+
+If you see repeated `Invalid RTVI transport message` warnings:
+
+- Verify room URL/token pair belongs to the same room and has proper permissions.
+- Test with a clean room and a single participant first.
+- Confirm no external client is sending malformed RTVI payloads without required fields.
 
 ### Available Commands
 

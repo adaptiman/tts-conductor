@@ -26,7 +26,8 @@ import json
 import os
 import threading
 import time
-from typing import Any, Awaitable, Callable, Optional, cast
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Literal, Optional, cast
 
 import aiohttp
 import pyaudio
@@ -39,21 +40,40 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    CancelFrame,
     EndFrame,
     Frame,
     InterimTranscriptionFrame,
     InterruptionFrame,
     OutputTransportMessageFrame,
+    StartFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
+from pipecat.pipeline.service_switcher import (
+    ServiceSwitcher,
+    ServiceSwitcherStrategyFailover,
+)
 from pipecat.pipeline.task import PipelineTask
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.whisper.stt import Model, WhisperSTTService
+from pipecat.turns.user_mute.base_user_mute_strategy import BaseUserMuteStrategy
+from pipecat.turns.user_mute.function_call_user_mute_strategy import (
+    FunctionCallUserMuteStrategy,
+)
+from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
+    TranscriptionUserTurnStartStrategy,
+)
+from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
+from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
+    SpeechTimeoutUserTurnStopStrategy,
+)
+from pipecat.turns.user_turn_processor import UserTurnProcessor
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
 from pipecat.transports.local.audio import (
     LocalAudioTransport,
@@ -91,6 +111,204 @@ _NUMBER_WORDS: dict[str, int] = {
     "nine": 9,
     "ten": 10,
 }
+
+_TURN_PROFILES = {"fast", "balanced", "safe"}
+_BARGE_IN_MODES = {"off", "commands", "always"}
+_COMMAND_EMIT_SOURCES = {"interim", "final", "turn_stop"}
+_STT_PROVIDERS = {"deepgram", "whisper"}
+_TEXT_AGGREGATION_MODES = {"token", "sentence"}
+
+
+TurnProfile = Literal["fast", "balanced", "safe"]
+BargeInMode = Literal["off", "commands", "always"]
+CommandEmitSource = Literal["interim", "final", "turn_stop"]
+SttProvider = Literal["deepgram", "whisper"]
+TextAggregationMode = Literal["token", "sentence"]
+
+
+@dataclass(frozen=True)
+class VoicePipelineConfig:
+    """Runtime knobs for turn detection and latency tuning."""
+
+    turn_profile: TurnProfile = "balanced"
+    barge_in_mode: BargeInMode = "commands"
+    command_emit_source: CommandEmitSource = "turn_stop"
+    idle_timeout_seconds: int = 120
+    stt_provider: SttProvider = "deepgram"
+    stt_keepalive_seconds: int = 20
+    stt_endpointing_ms: int = 250
+    stt_utterance_end_ms: int = 700
+    tts_concurrency: int = 1
+    tts_text_aggregation_mode: TextAggregationMode = "sentence"
+    failover_enabled: bool = True
+    failover_chain: tuple[str, ...] = ("deepgram", "whisper")
+    metrics_enabled: bool = True
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    logger.warning(
+        f"[VoiceCommands] Invalid {name}={value!r}; using default={default}."
+    )
+    return default
+
+
+def _env_int(name: str, default: int, minimum: Optional[int] = None) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+
+    try:
+        parsed = int(value)
+    except ValueError:
+        logger.warning(
+            f"[VoiceCommands] Invalid {name}={value!r}; using default={default}."
+        )
+        return default
+
+    if minimum is not None and parsed < minimum:
+        logger.warning(
+            f"[VoiceCommands] Invalid {name}={value!r}; minimum is {minimum}. "
+            f"Using default={default}."
+        )
+        return default
+    return parsed
+
+
+def _env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    parsed = tuple(item.strip().lower() for item in value.split(",") if item.strip())
+    if not parsed:
+        return default
+    return parsed
+
+
+def _parse_choice(
+    *,
+    value: Optional[str],
+    env_name: str,
+    default: str,
+    allowed: set[str],
+) -> str:
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().lower()
+    if normalized in allowed:
+        return normalized
+    logger.warning(
+        f"[VoiceCommands] Invalid {env_name}={value!r}; using default={default}."
+    )
+    return default
+
+
+def build_voice_pipeline_config(
+    *,
+    default_stt_provider: SttProvider,
+    turn_profile: Optional[str] = None,
+    barge_in_mode: Optional[str] = None,
+    command_emit_source: Optional[str] = None,
+    idle_timeout_seconds: Optional[int] = None,
+    stt_provider: Optional[str] = None,
+    stt_keepalive_seconds: Optional[int] = None,
+    stt_endpointing_ms: Optional[int] = None,
+    stt_utterance_end_ms: Optional[int] = None,
+    tts_concurrency: Optional[int] = None,
+    tts_text_aggregation_mode: Optional[str] = None,
+    failover_enabled: Optional[bool] = None,
+    failover_chain: Optional[tuple[str, ...]] = None,
+    metrics_enabled: Optional[bool] = None,
+) -> VoicePipelineConfig:
+    """Build validated runtime config from optional overrides + environment."""
+    resolved_turn_profile = _parse_choice(
+        value=turn_profile or os.getenv("IP_CONDUCTOR_TURN_PROFILE"),
+        env_name="IP_CONDUCTOR_TURN_PROFILE",
+        default="balanced",
+        allowed=_TURN_PROFILES,
+    )
+    resolved_barge_in_mode = _parse_choice(
+        value=barge_in_mode or os.getenv("IP_CONDUCTOR_BARGE_IN_MODE"),
+        env_name="IP_CONDUCTOR_BARGE_IN_MODE",
+        default="commands",
+        allowed=_BARGE_IN_MODES,
+    )
+    resolved_emit_source = _parse_choice(
+        value=command_emit_source or os.getenv("IP_CONDUCTOR_COMMAND_EMIT_SOURCE"),
+        env_name="IP_CONDUCTOR_COMMAND_EMIT_SOURCE",
+        default="turn_stop",
+        allowed=_COMMAND_EMIT_SOURCES,
+    )
+    resolved_stt_provider = _parse_choice(
+        value=stt_provider or os.getenv("IP_CONDUCTOR_STT_PROVIDER"),
+        env_name="IP_CONDUCTOR_STT_PROVIDER",
+        default=default_stt_provider,
+        allowed=_STT_PROVIDERS,
+    )
+    resolved_aggregation_mode = _parse_choice(
+        value=(
+            tts_text_aggregation_mode
+            or os.getenv("IP_CONDUCTOR_TTS_TEXT_AGGREGATION_MODE")
+        ),
+        env_name="IP_CONDUCTOR_TTS_TEXT_AGGREGATION_MODE",
+        default="sentence",
+        allowed=_TEXT_AGGREGATION_MODES,
+    )
+
+    return VoicePipelineConfig(
+        turn_profile=cast(TurnProfile, resolved_turn_profile),
+        barge_in_mode=cast(BargeInMode, resolved_barge_in_mode),
+        command_emit_source=cast(CommandEmitSource, resolved_emit_source),
+        idle_timeout_seconds=(
+            idle_timeout_seconds
+            if idle_timeout_seconds is not None
+            else _env_int("IP_CONDUCTOR_IDLE_TIMEOUT_SECONDS", 120, minimum=1)
+        ),
+        stt_provider=cast(SttProvider, resolved_stt_provider),
+        stt_keepalive_seconds=(
+            stt_keepalive_seconds
+            if stt_keepalive_seconds is not None
+            else _env_int("IP_CONDUCTOR_STT_KEEPALIVE_SECONDS", 20, minimum=1)
+        ),
+        stt_endpointing_ms=(
+            stt_endpointing_ms
+            if stt_endpointing_ms is not None
+            else _env_int("IP_CONDUCTOR_STT_ENDPOINTING_MS", 250, minimum=1)
+        ),
+        stt_utterance_end_ms=(
+            stt_utterance_end_ms
+            if stt_utterance_end_ms is not None
+            else _env_int("IP_CONDUCTOR_STT_UTTERANCE_END_MS", 700, minimum=1)
+        ),
+        tts_concurrency=(
+            tts_concurrency
+            if tts_concurrency is not None
+            else _env_int("IP_CONDUCTOR_TTS_CONCURRENCY", 1, minimum=1)
+        ),
+        tts_text_aggregation_mode=cast(TextAggregationMode, resolved_aggregation_mode),
+        failover_enabled=(
+            failover_enabled
+            if failover_enabled is not None
+            else _env_bool("IP_CONDUCTOR_FAILOVER_ENABLED", True)
+        ),
+        failover_chain=(
+            failover_chain
+            if failover_chain is not None
+            else _env_csv("IP_CONDUCTOR_FAILOVER_CHAIN", ("deepgram", "whisper"))
+        ),
+        metrics_enabled=(
+            metrics_enabled
+            if metrics_enabled is not None
+            else _env_bool("IP_CONDUCTOR_METRICS_ENABLED", True)
+        ),
+    )
 
 
 def _parse_step_count(token: str) -> Optional[int]:
@@ -144,9 +362,19 @@ class VoiceCommandProcessor(FrameProcessor):
             recognised voice command is detected.
     """
 
-    def __init__(self, on_command: Callable[[str], None], **kwargs):
+    def __init__(
+        self,
+        on_command: Callable[[str], None],
+        command_emit_source: CommandEmitSource = "turn_stop",
+        destructive_debounce_seconds: float = 3.0,
+        normal_debounce_seconds: float = 1.0,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._on_command = on_command
+        self._command_emit_source = command_emit_source
+        self._destructive_debounce_seconds = destructive_debounce_seconds
+        self._normal_debounce_seconds = normal_debounce_seconds
         self._last_command_at = 0.0
         self._last_command: Optional[str] = None
         self._last_command_text: Optional[str] = None
@@ -162,11 +390,26 @@ class VoiceCommandProcessor(FrameProcessor):
             text = frame.text.strip().lower()
             logger.info(f"[VoiceCommands] Transcript: {text!r}")
 
+            def _source_allows_emit() -> bool:
+                if self._command_emit_source == "interim":
+                    return is_interim
+                if self._command_emit_source in {"final", "turn_stop"}:
+                    return is_final
+                return is_final
+
             def _emit(command: str, transcript: str) -> bool:
+                if not _source_allows_emit():
+                    return False
+
                 now = time.monotonic()
                 # Keep destructive commands on a longer debounce window so a
                 # single utterance cannot accidentally trigger twice.
-                command_debounce = 3.0 if command == "delete" else 1.0
+                command_key = command.split()[0]
+                command_debounce = (
+                    self._destructive_debounce_seconds
+                    if command_key in {"delete", "archive"}
+                    else self._normal_debounce_seconds
+                )
                 if (
                     command == self._last_command
                     and now - self._last_command_at < command_debounce
@@ -312,6 +555,125 @@ class SpeechCompletionWatcher(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class PipelineMetricsObserver(FrameProcessor):
+    """Collects lightweight latency and interaction metrics from frames."""
+
+    def __init__(
+        self,
+        emit_metric: Callable[[str, float, Optional[dict[str, str]]], None],
+        enabled: bool = True,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._emit_metric = emit_metric
+        self._enabled = enabled
+        self._speech_started_at: Optional[float] = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if not self._enabled:
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, InterruptionFrame):
+            self._emit_metric("pipeline.interruptions", 1.0, None)
+
+        if isinstance(frame, InterimTranscriptionFrame):
+            self._emit_metric(
+                "stt.interim_transcript_chars",
+                float(len(frame.text.strip())),
+                None,
+            )
+
+        if isinstance(frame, TranscriptionFrame):
+            self._emit_metric(
+                "stt.final_transcript_chars",
+                float(len(frame.text.strip())),
+                None,
+            )
+
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._speech_started_at = time.monotonic()
+            self._emit_metric("tts.started", 1.0, None)
+
+        if isinstance(frame, BotStoppedSpeakingFrame):
+            self._emit_metric("tts.stopped", 1.0, None)
+            if self._speech_started_at is not None:
+                duration_ms = (time.monotonic() - self._speech_started_at) * 1000
+                self._emit_metric("tts.utterance_duration_ms", duration_ms, None)
+                self._speech_started_at = None
+
+        await self.push_frame(frame, direction)
+
+
+class BotSpeakingUserMuteStrategy(BaseUserMuteStrategy):
+    """Mute user transcript frames while the bot is actively speaking."""
+
+    def __init__(self):
+        super().__init__()
+        self._bot_speaking = False
+
+    async def reset(self):
+        self._bot_speaking = False
+
+    async def process_frame(self, frame: Frame) -> bool:
+        await super().process_frame(frame)
+
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+
+        return self._bot_speaking
+
+
+class StrategyUserMuteProcessor(FrameProcessor):
+    """Applies user mute strategies and suppresses transcript frames when muted."""
+
+    def __init__(
+        self,
+        mute_strategies: list[BaseUserMuteStrategy],
+        on_mute_state_changed: Optional[Callable[[bool], None]] = None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._mute_strategies = mute_strategies
+        self._on_mute_state_changed = on_mute_state_changed
+        self._muted = False
+
+    async def _setup_strategies(self) -> None:
+        for strategy in self._mute_strategies:
+            await strategy.setup(self.task_manager)
+
+    async def _cleanup_strategies(self) -> None:
+        for strategy in self._mute_strategies:
+            await strategy.cleanup()
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, StartFrame):
+            await self._setup_strategies()
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            await self._cleanup_strategies()
+
+        muted = False
+        for strategy in self._mute_strategies:
+            if await strategy.process_frame(frame):
+                muted = True
+
+        if muted != self._muted:
+            self._muted = muted
+            if self._on_mute_state_changed is not None:
+                self._on_mute_state_changed(muted)
+
+        if self._muted and isinstance(frame, (InterimTranscriptionFrame, TranscriptionFrame)):
+            return
+
+        await self.push_frame(frame, direction)
+
+
 class VoiceCommandListener:
     """Runs a pipecat STT pipeline in a daemon thread.
 
@@ -351,6 +713,7 @@ class VoiceCommandListener:
         elevenlabs_voice_id: Optional[str] = None,
         shutdown_when_room_empty: bool = False,
         empty_room_shutdown_seconds: Optional[float] = None,
+        pipeline_config: Optional[VoicePipelineConfig] = None,
     ):
         self._on_command = on_command
         self._model = model
@@ -368,6 +731,12 @@ class VoiceCommandListener:
         self._elevenlabs_api_key = elevenlabs_api_key or os.getenv("ELEVENLABS_API_KEY")
         self._elevenlabs_voice_id = elevenlabs_voice_id or os.getenv("ELEVENLABS_VOICE_ID")
         self._shutdown_when_room_empty = shutdown_when_room_empty
+        default_stt_provider: SttProvider = (
+            "deepgram" if self._transport_mode == "daily" else "whisper"
+        )
+        self._pipeline_config = pipeline_config or build_voice_pipeline_config(
+            default_stt_provider=default_stt_provider
+        )
 
         if empty_room_shutdown_seconds is None:
             empty_room_shutdown_seconds = 45.0
@@ -411,6 +780,9 @@ class VoiceCommandListener:
         self._remote_participants: set[str] = set()
         self._had_remote_participant = False
         self._empty_room_shutdown_task: Optional[asyncio.Task] = None
+        self._metrics_observer: Optional[PipelineMetricsObserver] = None
+        self._user_turn_processor: Optional[UserTurnProcessor] = None
+        self._user_mute_processor: Optional[StrategyUserMuteProcessor] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -950,6 +1322,180 @@ class VoiceCommandListener:
             with self._pending_tts_lock:
                 self._pending_tts_messages.clear()
 
+    def _emit_metric(
+        self,
+        name: str,
+        value: float,
+        tags: Optional[dict[str, str]] = None,
+    ) -> None:
+        """Emit lightweight metrics to logs for tuning and diagnostics."""
+        if not self._pipeline_config.metrics_enabled:
+            return
+
+        if tags:
+            tag_str = ",".join(f"{key}={val}" for key, val in sorted(tags.items()))
+            logger.info(f"[metrics] {name}={value:.3f} [{tag_str}]")
+            return
+        logger.info(f"[metrics] {name}={value:.3f}")
+
+    def _build_stt_service(self):
+        """Build STT service based on runtime configuration and transport mode."""
+        provider_order = [self._pipeline_config.stt_provider]
+        for provider in self._pipeline_config.failover_chain:
+            normalized = provider.strip().lower()
+            if normalized in _STT_PROVIDERS and normalized not in provider_order:
+                provider_order.append(cast(SttProvider, normalized))
+
+        services: list[FrameProcessor] = []
+        for provider in provider_order:
+            service = self._create_stt_service(provider)
+            if service is not None:
+                services.append(service)
+
+        if not services:
+            raise RuntimeError("No usable STT service could be created from configuration.")
+
+        if self._pipeline_config.failover_enabled and len(services) > 1:
+            switcher = ServiceSwitcher(
+                services=services,
+                strategy_type=ServiceSwitcherStrategyFailover,
+            )
+
+            @switcher.strategy.event_handler("on_service_switched")
+            async def on_service_switched(_strategy, service):
+                self._emit_metric(
+                    "service.stt_failover_switch",
+                    1.0,
+                    {"active_service": service.name},
+                )
+                logger.warning(
+                    f"[VoiceCommands] STT service switched to {service.name} after upstream error."
+                )
+
+            return switcher
+
+        return services[0]
+
+    def _create_stt_service(self, provider: SttProvider) -> Optional[FrameProcessor]:
+        if provider == "deepgram":
+            if self._transport_mode != "daily":
+                logger.warning(
+                    "[VoiceCommands] Deepgram STT is only supported in daily mode; skipping provider."
+                )
+                return None
+            if not self._deepgram_api_key:
+                logger.warning(
+                    "[VoiceCommands] DEEPGRAM_API_KEY is missing; Deepgram provider unavailable."
+                )
+                return None
+            return DeepgramSTTService(api_key=self._deepgram_api_key)
+
+        return WhisperSTTService(model=self._model, device=self._device)
+
+    def _build_tts_service(self):
+        """Build TTS service based on selected vendor and credentials."""
+        if not self._is_tts_vendor_configured():
+            return None
+
+        if self._tts_vendor == "elevenlabs":
+            logger.info(
+                f"[TTS] ElevenLabs TTS enabled (voice={self._elevenlabs_voice_id!r})"
+            )
+            try:
+                from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
+            except Exception as exc:
+                raise RuntimeError(
+                    "ElevenLabs TTS is unavailable. Install pipecat-ai[elevenlabs] and ensure ElevenLabs dependencies are present."
+                ) from exc
+
+            return ElevenLabsTTSService(
+                api_key=cast(str, self._elevenlabs_api_key),
+                voice_id=cast(str, self._elevenlabs_voice_id),
+            )
+
+        logger.info(f"[TTS] Cartesia TTS enabled (voice={self._cartesia_voice_id!r})")
+        return CartesiaTTSService(
+            api_key=self._cartesia_api_key,
+            voice_id=self._cartesia_voice_id,
+        )
+
+    def _build_turn_and_mute_processors(self) -> list[FrameProcessor]:
+        """Build strategy-driven turn and mute processors for the pipeline."""
+        if self._pipeline_config.turn_profile == "fast":
+            speech_timeout = 0.35
+            use_interim_start = True
+        elif self._pipeline_config.turn_profile == "safe":
+            speech_timeout = 0.9
+            use_interim_start = False
+        else:
+            speech_timeout = 0.6
+            use_interim_start = True
+
+        user_turn_strategies = UserTurnStrategies(
+            start=[
+                VADUserTurnStartStrategy(),
+                TranscriptionUserTurnStartStrategy(use_interim=use_interim_start),
+            ],
+            stop=[
+                SpeechTimeoutUserTurnStopStrategy(
+                    user_speech_timeout=speech_timeout,
+                )
+            ],
+        )
+
+        self._user_turn_processor = UserTurnProcessor(
+            user_turn_strategies=user_turn_strategies,
+            user_turn_stop_timeout=max(1.0, speech_timeout + 0.6),
+            user_idle_timeout=float(self._pipeline_config.idle_timeout_seconds),
+        )
+
+        @self._user_turn_processor.event_handler("on_user_turn_started")
+        async def on_user_turn_started(_processor, strategy):
+            self._emit_metric(
+                "turn.user_started",
+                1.0,
+                {"strategy": strategy.__class__.__name__},
+            )
+
+        @self._user_turn_processor.event_handler("on_user_turn_stopped")
+        async def on_user_turn_stopped(_processor, strategy):
+            self._emit_metric(
+                "turn.user_stopped",
+                1.0,
+                {"strategy": strategy.__class__.__name__},
+            )
+
+        @self._user_turn_processor.event_handler("on_user_turn_idle")
+        async def on_user_turn_idle(_processor):
+            self._emit_metric("turn.user_idle", 1.0, None)
+
+        mute_strategies: list[BaseUserMuteStrategy] = [FunctionCallUserMuteStrategy()]
+        if self._pipeline_config.turn_profile == "safe":
+            mute_strategies.insert(0, BotSpeakingUserMuteStrategy())
+
+        self._user_mute_processor = StrategyUserMuteProcessor(
+            mute_strategies=mute_strategies,
+            on_mute_state_changed=lambda muted: self._emit_metric(
+                "turn.user_muted", 1.0 if muted else 0.0, None
+            ),
+        )
+
+        return [self._user_turn_processor, self._user_mute_processor]
+
+    def _build_failover_strategy(self):
+        """Return failover strategy class for service switchers when enabled."""
+        if self._pipeline_config.failover_enabled:
+            return ServiceSwitcherStrategyFailover
+        return None
+
+    def _apply_runtime_service_settings(self) -> None:
+        """Apply runtime service settings where supported.
+
+        This method intentionally keeps a no-op implementation for now while
+        centralizing where typed STT/TTS setting updates will be applied.
+        """
+        return
+
     def _build_local_pipeline(self) -> Pipeline:
         """Build local mic + local Whisper pipeline."""
         transport = LocalAudioTransport(
@@ -962,24 +1508,31 @@ class VoiceCommandListener:
             )
         )
 
-        stt = WhisperSTTService(
-            model=self._model,
-            device=self._device,
-        )
+        turn_processors = self._build_turn_and_mute_processors()
+        stt = self._build_stt_service()
+        self._apply_runtime_service_settings()
 
         command_processor = VoiceCommandProcessor(
             on_command=self._on_command,
+            command_emit_source=self._pipeline_config.command_emit_source,
+        )
+        self._metrics_observer = PipelineMetricsObserver(
+            emit_metric=self._emit_metric,
+            enabled=self._pipeline_config.metrics_enabled,
         )
         # Keep the original working flow for command recognition.
-        return Pipeline([transport.input(), stt, command_processor])
+        return Pipeline(
+            [
+                transport.input(),
+                stt,
+                *turn_processors,
+                command_processor,
+                self._metrics_observer,
+            ]
+        )
 
     async def _build_daily_pipeline(self) -> Pipeline:
         """Build Daily WebRTC transport + Deepgram STT pipeline."""
-        if not self._deepgram_api_key:
-            raise RuntimeError(
-                "DEEPGRAM_API_KEY is required for Daily + Deepgram mode."
-            )
-
         self._daily_session = aiohttp.ClientSession()
 
         room_url = self._daily_room_url
@@ -998,6 +1551,7 @@ class VoiceCommandListener:
         print(f"[voice] Daily room: {room_url}")
 
         tts_active = self._is_tts_vendor_configured()
+        turn_processors = self._build_turn_and_mute_processors()
 
         transport = DailyTransport(
             room_url,
@@ -1015,38 +1569,24 @@ class VoiceCommandListener:
         )
         self._daily_transport = transport
 
-        stt = DeepgramSTTService(
-            api_key=self._deepgram_api_key,
-        )
+        stt = self._build_stt_service()
+        self._apply_runtime_service_settings()
 
         command_processor = VoiceCommandProcessor(
             on_command=self._on_command,
+            command_emit_source=self._pipeline_config.command_emit_source,
+        )
+        self._metrics_observer = PipelineMetricsObserver(
+            emit_metric=self._emit_metric,
+            enabled=self._pipeline_config.metrics_enabled,
         )
 
         if tts_active:
-            if self._tts_vendor == "elevenlabs":
-                logger.info(
-                    f"[TTS] ElevenLabs TTS enabled (voice={self._elevenlabs_voice_id!r})"
-                )
-                try:
-                    from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
-                except Exception as exc:
-                    raise RuntimeError(
-                        "ElevenLabs TTS is unavailable. Install pipecat-ai[elevenlabs] and ensure ElevenLabs dependencies are present."
-                    ) from exc
+            tts = self._build_tts_service()
+            if tts is None:
+                tts_active = False
 
-                tts = ElevenLabsTTSService(
-                    api_key=cast(str, self._elevenlabs_api_key),
-                    voice_id=cast(str, self._elevenlabs_voice_id),
-                )
-            else:
-                logger.info(
-                    f"[TTS] Cartesia TTS enabled (voice={self._cartesia_voice_id!r})"
-                )
-                tts = CartesiaTTSService(
-                    api_key=self._cartesia_api_key,
-                    voice_id=self._cartesia_voice_id,
-                )
+        if tts_active:
             self._speech_watcher = SpeechCompletionWatcher(
                 on_started=self._on_tts_started,
                 on_stopped=self._on_tts_stopped,
@@ -1088,6 +1628,23 @@ class VoiceCommandListener:
 
         if tts_active:
             return Pipeline(
-                [transport.input(), stt, command_processor, tts, self._speech_watcher, transport.output()]
+                [
+                    transport.input(),
+                    stt,
+                    *turn_processors,
+                    command_processor,
+                    self._metrics_observer,
+                    tts,
+                    self._speech_watcher,
+                    transport.output(),
+                ]
             )
-        return Pipeline([transport.input(), stt, command_processor])
+        return Pipeline(
+            [
+                transport.input(),
+                stt,
+                *turn_processors,
+                command_processor,
+                self._metrics_observer,
+            ]
+        )

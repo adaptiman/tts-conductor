@@ -16,6 +16,8 @@ _TTS_SKIP_RE = re.compile(
     r"|^\[mirror\]"                 # mirror status
     r"|^\[tts\]"                    # TTS status
     r"|^\[headless\]"               # headless-mode status
+    r"|^\[metrics\]"                # metrics and latency telemetry
+    r"|^\[transport\]"              # low-level transport diagnostics
 )
 
 

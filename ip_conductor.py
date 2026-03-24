@@ -388,6 +388,19 @@ def run_console(
     daily_token=None,
     tts_vendor="cartesia",
     headless=False,
+    turn_profile=None,
+    barge_in_mode=None,
+    command_emit_source=None,
+    idle_timeout_seconds=None,
+    stt_provider=None,
+    stt_keepalive_seconds=None,
+    stt_endpointing_ms=None,
+    stt_utterance_end_ms=None,
+    tts_concurrency=None,
+    tts_text_aggregation=None,
+    failover_enabled=None,
+    failover_chain=None,
+    metrics_enabled=None,
 ):
     """Main console interface.
 
@@ -726,7 +739,54 @@ def run_console(
     voice_listener = None
     if voice:
         try:
-            from voice_commands import VoiceCommandListener
+            from voice_commands import VoiceCommandListener, build_voice_pipeline_config
+
+            pipeline_config = build_voice_pipeline_config(
+                default_stt_provider=(
+                    "deepgram" if voice_transport == "daily" else "whisper"
+                ),
+                turn_profile=turn_profile,
+                barge_in_mode=barge_in_mode,
+                command_emit_source=command_emit_source,
+                idle_timeout_seconds=idle_timeout_seconds,
+                stt_provider=stt_provider,
+                stt_keepalive_seconds=stt_keepalive_seconds,
+                stt_endpointing_ms=stt_endpointing_ms,
+                stt_utterance_end_ms=stt_utterance_end_ms,
+                tts_concurrency=tts_concurrency,
+                tts_text_aggregation_mode=tts_text_aggregation,
+                failover_enabled=failover_enabled,
+                failover_chain=tuple(failover_chain) if failover_chain else None,
+                metrics_enabled=metrics_enabled,
+            )
+
+            def _should_interrupt_for_command(command: str) -> bool:
+                if pipeline_config.barge_in_mode == "off":
+                    return False
+                if pipeline_config.barge_in_mode == "always":
+                    return True
+
+                command_root = command.strip().lower().split()[0] if command.strip() else ""
+                actionable_commands = {
+                    "next",
+                    "prev",
+                    "previous",
+                    "first",
+                    "last",
+                    "back",
+                    "forward",
+                    "repeat",
+                    "delete",
+                    "archive",
+                    "read",
+                    "pause",
+                    "continue",
+                    "resume",
+                    "stop",
+                    "highlight",
+                    "mark",
+                }
+                return command_root in actionable_commands
 
             def _on_voice_command(command: str) -> None:
                 """Called from the pipecat background thread on voice detection."""
@@ -737,6 +797,7 @@ def run_console(
                     and _is_speak_running()
                     and voice_listener is not None
                     and voice_listener.tts_enabled
+                    and _should_interrupt_for_command(command)
                 ):
                     # Commands in speak mode should stop the current utterance immediately.
                     voice_listener.interrupt_tts()
@@ -803,6 +864,7 @@ def run_console(
                 elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY"),
                 elevenlabs_voice_id=os.getenv("ELEVENLABS_VOICE_ID"),
                 shutdown_when_room_empty=(headless and voice_transport == "daily"),
+                pipeline_config=pipeline_config,
             )
             output.write_line(
                 "[voice] Starting voice command listener "
@@ -968,6 +1030,124 @@ def main():
         ),
     )
     parser.add_argument(
+        "--turn-profile",
+        choices=["fast", "balanced", "safe"],
+        default=None,
+        help=(
+            "Turn handling profile for voice command recognition. "
+            "Falls back to IP_CONDUCTOR_TURN_PROFILE or 'balanced'."
+        ),
+    )
+    parser.add_argument(
+        "--barge-in-mode",
+        choices=["off", "commands", "always"],
+        default=None,
+        help=(
+            "Interrupt behavior when voice commands are detected during TTS playback. "
+            "Falls back to IP_CONDUCTOR_BARGE_IN_MODE or 'commands'."
+        ),
+    )
+    parser.add_argument(
+        "--command-emit-source",
+        choices=["interim", "final", "turn_stop"],
+        default=None,
+        help=(
+            "Which transcript stage emits commands. "
+            "Falls back to IP_CONDUCTOR_COMMAND_EMIT_SOURCE or 'turn_stop'."
+        ),
+    )
+    parser.add_argument(
+        "--idle-timeout-seconds",
+        type=int,
+        default=None,
+        help=(
+            "Idle timeout in seconds for voice pipeline behavior. "
+            "Falls back to IP_CONDUCTOR_IDLE_TIMEOUT_SECONDS or 120."
+        ),
+    )
+    parser.add_argument(
+        "--stt-provider",
+        choices=["deepgram", "whisper"],
+        default=None,
+        help=(
+            "STT backend selection. Falls back to IP_CONDUCTOR_STT_PROVIDER "
+            "or transport default (deepgram for daily, whisper for local)."
+        ),
+    )
+    parser.add_argument(
+        "--stt-keepalive-seconds",
+        type=int,
+        default=None,
+        help=(
+            "STT keepalive interval in seconds. "
+            "Falls back to IP_CONDUCTOR_STT_KEEPALIVE_SECONDS or 20."
+        ),
+    )
+    parser.add_argument(
+        "--stt-endpointing-ms",
+        type=int,
+        default=None,
+        help=(
+            "Endpointing aggressiveness in milliseconds. "
+            "Falls back to IP_CONDUCTOR_STT_ENDPOINTING_MS or 250."
+        ),
+    )
+    parser.add_argument(
+        "--stt-utterance-end-ms",
+        type=int,
+        default=None,
+        help=(
+            "Utterance end delay in milliseconds. "
+            "Falls back to IP_CONDUCTOR_STT_UTTERANCE_END_MS or 700."
+        ),
+    )
+    parser.add_argument(
+        "--tts-concurrency",
+        type=int,
+        default=None,
+        help=(
+            "Desired concurrent TTS context count where provider supports it. "
+            "Falls back to IP_CONDUCTOR_TTS_CONCURRENCY or 1."
+        ),
+    )
+    parser.add_argument(
+        "--tts-text-aggregation",
+        choices=["token", "sentence"],
+        default=None,
+        help=(
+            "Text aggregation mode for TTS handling. "
+            "Falls back to IP_CONDUCTOR_TTS_TEXT_AGGREGATION_MODE or 'sentence'."
+        ),
+    )
+    parser.add_argument(
+        "--failover",
+        dest="failover",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Enable/disable automatic service failover. "
+            "Falls back to IP_CONDUCTOR_FAILOVER_ENABLED or true."
+        ),
+    )
+    parser.add_argument(
+        "--failover-chain",
+        default=None,
+        help=(
+            "Comma-separated service failover order, e.g. 'deepgram,whisper'. "
+            "Falls back to IP_CONDUCTOR_FAILOVER_CHAIN."
+        ),
+    )
+    parser.add_argument(
+        "--metrics",
+        dest="metrics",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Enable/disable pipeline metrics logs. "
+            "Falls back to IP_CONDUCTOR_METRICS_ENABLED or true."
+        ),
+    )
+    parser.add_argument(
         "--daily-room-url",
         default=os.getenv("DAILY_ROOM_URL"),
         help=(
@@ -1009,6 +1189,14 @@ def main():
         return
 
     try:
+        parsed_failover_chain = None
+        if args.failover_chain:
+            parsed_failover_chain = [
+                item.strip().lower()
+                for item in args.failover_chain.split(",")
+                if item.strip()
+            ]
+
         manager = ArticleManager()
         run_console(
             manager,
@@ -1018,6 +1206,19 @@ def main():
             daily_token=args.daily_token,
             tts_vendor=args.tts_vendor,
             headless=args.headless,
+            turn_profile=args.turn_profile,
+            barge_in_mode=args.barge_in_mode,
+            command_emit_source=args.command_emit_source,
+            idle_timeout_seconds=args.idle_timeout_seconds,
+            stt_provider=args.stt_provider,
+            stt_keepalive_seconds=args.stt_keepalive_seconds,
+            stt_endpointing_ms=args.stt_endpointing_ms,
+            stt_utterance_end_ms=args.stt_utterance_end_ms,
+            tts_concurrency=args.tts_concurrency,
+            tts_text_aggregation=args.tts_text_aggregation,
+            failover_enabled=args.failover,
+            failover_chain=parsed_failover_chain,
+            metrics_enabled=args.metrics,
         )
     except (AttributeError, ValueError, RuntimeError, OSError, KeyError) as e:
         print(f"Error starting application: {e}")
