@@ -19,6 +19,17 @@ require_command() {
   fi
 }
 
+env_get_from_file() {
+  local env_file="$1"
+  local key="$2"
+
+  if [[ ! -f "$env_file" ]]; then
+    return 0
+  fi
+
+  grep -E "^${key}=" "$env_file" | head -1 | cut -d= -f2- | sed "s/^['\"]//;s/['\"]$//"
+}
+
 docker_image_id() {
   local image_ref="$1"
   docker image inspect "$image_ref" --format '{{.Id}}' 2>/dev/null || true
@@ -56,6 +67,24 @@ acr_registry_name_from_image() {
   return 1
 }
 
+azure_login_service_principal() {
+  local client_id="$1"
+  local client_secret="$2"
+  local tenant_id="$3"
+
+  if [[ -z "$client_id" || -z "$client_secret" || -z "$tenant_id" ]]; then
+    fail "Missing Azure service principal credentials. Set AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, and AZURE_TENANT_ID in the environment or in ${AZURE_AUTH_ENV_FILE}."
+  fi
+
+  log "Logging into Azure with service principal ${client_id}"
+  az login \
+    --service-principal \
+    --username "$client_id" \
+    --password "$client_secret" \
+    --tenant "$tenant_id" \
+    >/dev/null
+}
+
 if docker compose version >/dev/null 2>&1; then
   COMPOSE_CMD=(docker compose)
 elif command -v docker-compose >/dev/null 2>&1; then
@@ -69,6 +98,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VM_DIR="$REPO_DIR/vm"
 COMPOSE_FILE="$VM_DIR/docker-compose.yml"
 COMPOSE_ENV_FILE="$VM_DIR/.env"
+AZURE_AUTH_ENV_FILE="${AZURE_AUTH_ENV_FILE:-/etc/tts-conductor/update-production.env}"
 TARGET_BRANCH="${1:-main}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-https://localhost:8443/health}"
 STATUS_URL="${STATUS_URL:-https://localhost:8443/status}"
@@ -111,22 +141,21 @@ else
   log "No repository update detected"
 fi
 
-# Safely read a single key from the .env file without sourcing it as a shell
-# script (sourcing causes unquoted multi-word values like BOT_COMMAND to be
-# executed as commands).
-_env_get() {
-  local key="$1"
-  grep -E "^${key}=" "$COMPOSE_ENV_FILE" | head -1 | cut -d= -f2- | sed "s/^['\"]//;s/['\"]$//"
-}
-
-BOT_IMAGE="$(_env_get BOT_IMAGE)"
+# Safely read a single key from env files without sourcing them as shell scripts
+# (sourcing causes unquoted multi-word values like BOT_COMMAND to be executed as
+# commands).
+BOT_IMAGE="$(env_get_from_file "$COMPOSE_ENV_FILE" BOT_IMAGE)"
 BOT_IMAGE="${BOT_IMAGE:-acrttsconductorprod.azurecr.io/tts-conductor:latest}"
-JOB_LAUNCHER_SHARED_SECRET="$(_env_get JOB_LAUNCHER_SHARED_SECRET)"
+JOB_LAUNCHER_SHARED_SECRET="$(env_get_from_file "$COMPOSE_ENV_FILE" JOB_LAUNCHER_SHARED_SECRET)"
+AZURE_CLIENT_ID="${AZURE_CLIENT_ID:-$(env_get_from_file "$AZURE_AUTH_ENV_FILE" AZURE_CLIENT_ID)}"
+AZURE_CLIENT_SECRET="${AZURE_CLIENT_SECRET:-$(env_get_from_file "$AZURE_AUTH_ENV_FILE" AZURE_CLIENT_SECRET)}"
+AZURE_TENANT_ID="${AZURE_TENANT_ID:-$(env_get_from_file "$AZURE_AUTH_ENV_FILE" AZURE_TENANT_ID)}"
 
 PRE_PULL_BOT_IMAGE_ID="$(docker_image_id "$BOT_IMAGE")"
 
 if ACR_NAME="$(acr_registry_name_from_image "$BOT_IMAGE")"; then
   require_command az
+  azure_login_service_principal "$AZURE_CLIENT_ID" "$AZURE_CLIENT_SECRET" "$AZURE_TENANT_ID"
   log "Logging into Azure Container Registry: $ACR_NAME"
   az acr login --name "$ACR_NAME" >/dev/null
 fi
