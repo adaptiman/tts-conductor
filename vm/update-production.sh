@@ -101,6 +101,8 @@ COMPOSE_ENV_FILE="$VM_DIR/.env"
 AZURE_AUTH_ENV_FILE="${AZURE_AUTH_ENV_FILE:-/etc/tts-conductor/update-production.env}"
 TARGET_BRANCH="${1:-main}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-https://localhost:8443/health}"
+HEALTHCHECK_RETRIES="${HEALTHCHECK_RETRIES:-12}"
+HEALTHCHECK_INTERVAL_SECONDS="${HEALTHCHECK_INTERVAL_SECONDS:-5}"
 STATUS_URL="${STATUS_URL:-https://localhost:8443/status}"
 LAUNCH_URL="${LAUNCH_URL:-https://localhost:8443/launch}"
 STOP_URL="${STOP_URL:-https://localhost:8443/stop}"
@@ -203,11 +205,29 @@ for container_name in "${EXPECTED_CONTAINERS[@]}"; do
 done
 
 log "Checking launcher health endpoint: $HEALTHCHECK_URL"
-health_payload="$(curl --silent --show-error --fail --max-time 20 --insecure "$HEALTHCHECK_URL")"
-if [[ "$health_payload" != *'"ok":true'* ]]; then
-  fail "Launcher health check did not report ok=true. Response: $health_payload"
+health_payload=""
+health_error=""
+for ((attempt=1; attempt<=HEALTHCHECK_RETRIES; attempt++)); do
+  if health_payload="$(curl --silent --show-error --fail --max-time 20 --insecure "$HEALTHCHECK_URL" 2>&1)"; then
+    if [[ "$health_payload" == *'"ok":true'* ]]; then
+      log "Launcher health check passed on attempt ${attempt}/${HEALTHCHECK_RETRIES}: $health_payload"
+      health_error=""
+      break
+    fi
+    health_error="Unexpected health payload: $health_payload"
+  else
+    health_error="$health_payload"
+  fi
+
+  if (( attempt < HEALTHCHECK_RETRIES )); then
+    log "Launcher health check attempt ${attempt}/${HEALTHCHECK_RETRIES} failed: ${health_error}. Retrying in ${HEALTHCHECK_INTERVAL_SECONDS}s"
+    sleep "$HEALTHCHECK_INTERVAL_SECONDS"
+  fi
+done
+
+if [[ -n "$health_error" ]]; then
+  fail "Launcher health check failed after ${HEALTHCHECK_RETRIES} attempts: $health_error"
 fi
-log "Launcher health check passed: $health_payload"
 
 if [[ -n "${JOB_LAUNCHER_SHARED_SECRET:-}" ]]; then
   log "Checking launcher status endpoint"
