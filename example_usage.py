@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+
 """Example showing how to use ArticleManager in other programs."""
 
 from article_manager import ArticleManager

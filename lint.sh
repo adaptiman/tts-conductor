@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
 # Run all linting and formatting tools
 
 set -euo pipefail

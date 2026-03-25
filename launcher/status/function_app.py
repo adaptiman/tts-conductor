@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+
 """Azure Function: launcher status proxy endpoint."""
 
 import json

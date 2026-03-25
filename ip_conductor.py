@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+
 """A simple console application to interact with Instapaper bookmarks."""
 
 import argparse

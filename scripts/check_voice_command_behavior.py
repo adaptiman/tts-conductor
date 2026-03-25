@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+
 """Focused behavior checks for voice command dedupe and mute strategy wiring.
 
 Run:

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+
 """VM launcher service for starting and stopping the bot container on demand."""
 
 import hmac

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+
 """Core command execution service for the Instapaper conductor app.
 
 This module keeps command parsing and execution separate from terminal I/O so

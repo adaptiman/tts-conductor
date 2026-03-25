@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+
 """ArticleManager class for managing Instapaper bookmark operations and navigation."""
 
 import os

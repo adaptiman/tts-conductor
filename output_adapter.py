@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+
 """Output adapter abstractions for conductor frontends.
 
 The console adapter keeps current terminal behavior intact while allowing future

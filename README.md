@@ -980,3 +980,7 @@ source .venv/bin/activate
 ```
 
 The virtual environment must be activated to access the installed packages.
+
+## License
+
+This project is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International license. See [LICENSE](LICENSE.md).

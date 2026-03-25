@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+
 """Azure Function: Daily webhook lifecycle handler for the VM launcher.
 
 This endpoint validates Daily webhooks, maps start/stop events, and then calls

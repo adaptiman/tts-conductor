@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+
 """Voice command listener using pipecat-ai for STT-driven navigation.
 
 This module runs a pipecat pipeline in a background thread that listens to

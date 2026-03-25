@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+
 """Azure Function: proxy launch endpoint for the VM launcher service."""
 
 import hmac
