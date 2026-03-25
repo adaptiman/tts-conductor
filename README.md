@@ -845,6 +845,28 @@ Notes:
 - Refresh the bot image during deploy/maintenance with `docker pull <your-acr-login-server>/tts-conductor:latest`.
 - If you set `BOT_PULL_ON_START=true`, ensure the launcher runtime has valid registry credentials for every launch request.
 
+### VM operation scripts
+
+The `vm/` folder includes helper scripts for common production operations:
+- `vm/update-production.sh`: Pull latest repo + image updates, validate launcher health, and relaunch the bot when needed.
+- `vm/tts-conductor-restart.sh`: Force recreate launcher services and trigger a bot launch.
+- `vm/docker-maintenance.sh`: Prune Docker resources and log reclaimed space to `/etc/tts-conductor/docker-maintenance.log`.
+- `vm/refresh-bot-token.sh`: Re-auth to Azure/ACR, restart launcher services, relaunch the bot, and verify the running bot token hash matches `.env`.
+
+Use `vm/refresh-bot-token.sh` after rotating `DAILY_TOKEN` in the repository root `.env` on the VM:
+
+```bash
+cd ~/tts-conductor
+./vm/refresh-bot-token.sh
+```
+
+Useful overrides for `vm/refresh-bot-token.sh`:
+- `SKIP_AZURE_LOGIN=true` if host ACR auth is already valid.
+- `WAIT_SECONDS=<n>` to adjust startup wait time for `tts-conductor-bot`.
+- `ROOT_ENV_FILE`, `VM_ENV_FILE`, `AZURE_AUTH_ENV_FILE`, `LAUNCH_URL`, `STATUS_URL`, `BOT_CONTAINER_NAME` for non-default paths/endpoints.
+
+For incident response steps, see `TROUBLESHOOTING.md` -> "Production VM Troubleshooting".
+
 If NSG ingress is missing, allow TCP 8443 on the VM NSG.
 
 TODO: move runtime secrets out of plain `.env` into a controlled secret solution (for example Key Vault or Docker Swarm/Kubernetes secrets).

@@ -58,3 +58,28 @@ If problems persist, check:
 - Global VS Code settings (`Ctrl+Shift+P` > "Preferences: Open Settings (JSON)")
 - Installed VS Code extensions
 - Git configuration for hooks
+
+## Production VM Troubleshooting
+
+For VM runtime incidents (bot does not join, token rotation not reflected, launcher restart issues), use the VM operation scripts documented in `README.md` under the "VM operation scripts" section.
+
+Recommended first command after rotating `DAILY_TOKEN` in the VM's repository root `.env`:
+
+```bash
+cd ~/tts-conductor
+./vm/refresh-bot-token.sh
+```
+
+What this script verifies:
+- Re-authenticates host access to Azure/ACR (unless `SKIP_AZURE_LOGIN=true`)
+- Recreates launcher services and relaunches `tts-conductor-bot`
+- Confirms the running bot container's `DAILY_TOKEN` hash matches `.env`
+
+If it fails, review the script output first, then check launcher health/status endpoints:
+
+```bash
+cd ~/tts-conductor/vm
+secret="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' tts-launcher | awk -F= '/^LAUNCHER_SHARED_SECRET=/{print substr($0,index($0,$2)); exit}')"
+curl -sk -H "x-job-launcher-secret: $secret" https://localhost:8443/health
+curl -sk -H "x-job-launcher-secret: $secret" https://localhost:8443/status
+```
