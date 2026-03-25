@@ -1341,10 +1341,11 @@ class VoiceCommandListener:
     def _build_stt_service(self):
         """Build STT service based on runtime configuration and transport mode."""
         provider_order = [self._pipeline_config.stt_provider]
-        for provider in self._pipeline_config.failover_chain:
-            normalized = provider.strip().lower()
-            if normalized in _STT_PROVIDERS and normalized not in provider_order:
-                provider_order.append(cast(SttProvider, normalized))
+        if self._pipeline_config.failover_enabled:
+            for provider in self._pipeline_config.failover_chain:
+                normalized = provider.strip().lower()
+                if normalized in _STT_PROVIDERS and normalized not in provider_order:
+                    provider_order.append(cast(SttProvider, normalized))
 
         services: list[FrameProcessor] = []
         for provider in provider_order:

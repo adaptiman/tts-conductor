@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.8.0324.3 - 2026-03-24
+
+### Fixed
+- Fixed Daily voice startup regression where Whisper STT could still be instantiated when failover was disabled.
+- Updated STT service initialization to only include failover-chain providers when `IP_CONDUCTOR_FAILOVER_ENABLED` is enabled.
+
+### Notes
+- This patch restores expected Deepgram-only Daily behavior when failover is disabled.
+
 ## 0.8.0324.2 - 2026-03-24
 
 ### Added
