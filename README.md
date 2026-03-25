@@ -73,6 +73,7 @@ This design allows you to easily integrate Instapaper functionality into other P
    ```bash
    DAILY_ROOM_URL=https://your-domain.daily.co/your-room
    DAILY_TOKEN=your_daily_token
+   DAILY_API_KEY=your_daily_api_key
    DEEPGRAM_API_KEY=your_deepgram_api_key
 
    # Select default TTS vendor for Daily mode
@@ -85,7 +86,37 @@ This design allows you to easily integrate Instapaper functionality into other P
    # ElevenLabs
    ELEVENLABS_API_KEY=your_elevenlabs_api_key
    ELEVENLABS_VOICE_ID=your_elevenlabs_voice_id
+
+   # Optional: choose local mic device index for --voice --voice-transport local
+   IP_CONDUCTOR_INPUT_DEVICE_INDEX=0
+
+   # Optional: Daily/headless empty-room auto-shutdown window
+   EMPTY_ROOM_SHUTDOWN_SECONDS=45
    ```
+
+5. (Optional) Tune voice turn-taking, failover, and telemetry defaults:
+   ```bash
+   IP_CONDUCTOR_TURN_PROFILE=balanced
+   IP_CONDUCTOR_BARGE_IN_MODE=commands
+   IP_CONDUCTOR_COMMAND_EMIT_SOURCE=turn_stop
+   IP_CONDUCTOR_IDLE_TIMEOUT_SECONDS=120
+
+   IP_CONDUCTOR_STT_PROVIDER=deepgram
+   IP_CONDUCTOR_STT_KEEPALIVE_SECONDS=20
+   IP_CONDUCTOR_STT_ENDPOINTING_MS=250
+   IP_CONDUCTOR_STT_UTTERANCE_END_MS=700
+
+   IP_CONDUCTOR_TTS_CONCURRENCY=1
+   IP_CONDUCTOR_TTS_TEXT_AGGREGATION_MODE=sentence
+
+   IP_CONDUCTOR_FAILOVER_ENABLED=true
+   IP_CONDUCTOR_FAILOVER_CHAIN=deepgram,whisper
+   IP_CONDUCTOR_METRICS_ENABLED=true
+   ```
+
+For the complete and current environment variable list, see `.env.example`.
+
+For VM launcher compose settings, see `vm/.env.example`.
 
 **Note**: Never commit your `.env` file to version control. It's already included in `.gitignore`.
 
