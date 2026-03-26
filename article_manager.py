@@ -178,12 +178,29 @@ class ArticleManager:
         except (AttributeError, ValueError, RuntimeError, OSError) as e:
             return (False, url, str(e))
 
+    def _highlight_occurrence_index(self, article_text, highlight_text, char_offset):
+        """Convert a character offset into Instapaper's occurrence index."""
+        if not article_text or not highlight_text:
+            return None
+
+        if not isinstance(char_offset, int) or char_offset < 0:
+            return None
+
+        highlight_end = char_offset + len(highlight_text)
+        if article_text[char_offset:highlight_end] != highlight_text:
+            return None
+
+        # Instapaper's `position` is the count of prior matching selections,
+        # not the raw character offset in the article body.
+        return article_text[:char_offset].count(highlight_text)
+
     def create_highlight_for_current(self, highlight_text, position=0):
         """Creates a highlight for the current bookmark.
 
         Args:
             highlight_text: The text to highlight.
-            position: Optional. The 0-indexed character position of the text in the content.
+            position: Optional. A character offset used to identify which repeated
+                instance of the selected text should be highlighted.
 
         Returns (success, title, highlight_text, error_msg).
         """
@@ -217,18 +234,17 @@ class ArticleManager:
             for candidate in candidates:
                 try:
                     if requested_position is not None and article_text:
-                        candidate_end = requested_position + len(candidate)
-                        if article_text[requested_position:candidate_end] == candidate:
-                            m.create_highlight(candidate, position=requested_position)
+                        occurrence_index = self._highlight_occurrence_index(
+                            article_text,
+                            candidate,
+                            requested_position,
+                        )
+                        if occurrence_index is not None:
+                            m.create_highlight(candidate, position=occurrence_index)
                             return (True, title, candidate, None)
 
-                    if article_text:
-                        found_at = article_text.find(candidate)
-                        if found_at >= 0:
-                            m.create_highlight(candidate, position=found_at)
-                            return (True, title, candidate, None)
-
-                    # Fallback if no exact position match was found.
+                    # When we don't have a verified duplicate-selection index,
+                    # let Instapaper resolve the first matching occurrence.
                     m.create_highlight(candidate)
                     return (True, title, candidate, None)
                 except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
