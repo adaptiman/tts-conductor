@@ -793,6 +793,8 @@ The bot image source of truth is ACR:
 - Built automatically on pushes to `main`
 - Pulled onto the VM during deploy/maintenance
 
+For an end-to-end user session flow (room join -> Instapaper navigation/read commands -> room leave), see [USER_JOURNEY.md](USER_JOURNEY.md).
+
 ### Phase 5: HTTP launcher for VM on-demand starts
 
 The `launcher/` function app exposes:
@@ -852,6 +854,8 @@ The `vm/` folder includes helper scripts for common production operations:
 - `vm/tts-conductor-restart.sh`: Force recreate launcher services and trigger a bot launch.
 - `vm/docker-maintenance.sh`: Prune Docker resources and log reclaimed space to `/etc/tts-conductor/docker-maintenance.log`.
 - `vm/refresh-bot-token.sh`: Re-auth to Azure/ACR, restart launcher services, relaunch the bot, and verify the running bot token hash matches `.env`.
+
+For the end-to-end in-room user command flow, see [USER_JOURNEY.md](USER_JOURNEY.md).
 
 Use `vm/refresh-bot-token.sh` after rotating `DAILY_TOKEN` in the repository root `.env` on the VM:
 

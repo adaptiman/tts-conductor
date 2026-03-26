@@ -1,0 +1,37 @@
+flowchart TD
+  A[User enters Daily room] --> B[Bot/app launch trigger]
+  B --> C[Initialize app session]
+  C --> D[Connect/auth to Instapaper]
+  D --> E[Navigation mode enabled]
+
+  E --> F{User command?}
+  F -->|next| G[Move to next article]
+  F -->|previous| H[Move to previous article]
+  F -->|delete| I[Delete article]
+  F -->|archive| J[Archive article]
+  F -->|enter read mode| K[Enter read mode]
+
+  G --> E
+  H --> E
+  I --> E
+  J --> E
+
+  K --> L{Read mode command?}
+  L -->|forwardX / fowardX| M[Advance reading position by X]
+  L -->|backX| N[Move back by X]
+  L -->|highlight| O[Highlight selection/segment]
+  L -->|delete| P[Delete current article]
+  L -->|archive| Q[Archive current article]
+  L -->|exit read mode| E
+
+  M --> K
+  N --> K
+  O --> K
+  P --> K
+  Q --> K
+
+  E --> R{User leaves Daily room?}
+  K --> R
+  R -->|Yes| S[Terminate workflow]
+  S --> T[Disconnect session and cleanup]
+  R -->|No| E
