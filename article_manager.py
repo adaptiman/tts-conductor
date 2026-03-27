@@ -7,6 +7,7 @@ import os
 import instapaper
 import spacy
 from dotenv import load_dotenv
+from loguru import logger
 
 
 class ArticleManager:
@@ -194,13 +195,13 @@ class ArticleManager:
         # not the raw character offset in the article body.
         return article_text[:char_offset].count(highlight_text)
 
-    def create_highlight_for_current(self, highlight_text, position=0):
+    def create_highlight_for_current(self, highlight_text, position=None):
         """Creates a highlight for the current bookmark.
 
         Args:
             highlight_text: The text to highlight.
-            position: Optional. A character offset used to identify which repeated
-                instance of the selected text should be highlighted.
+            position: Optional character offset used only when explicitly
+                provided by the caller.
 
         Returns (success, title, highlight_text, error_msg).
         """
@@ -240,14 +241,28 @@ class ArticleManager:
                             requested_position,
                         )
                         if occurrence_index is not None:
+                            logger.info(
+                                "[highlight] creating with position occurrence_index={} candidate={!r}",
+                                occurrence_index,
+                                candidate[:120],
+                            )
                             m.create_highlight(candidate, position=occurrence_index)
                             return (True, title, candidate, None)
 
                     # When we don't have a verified duplicate-selection index,
                     # let Instapaper resolve the first matching occurrence.
+                    logger.info(
+                        "[highlight] creating without position candidate={!r}",
+                        candidate[:120],
+                    )
                     m.create_highlight(candidate)
                     return (True, title, candidate, None)
                 except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
+                    logger.warning(
+                        "[highlight] create failed for candidate={!r}: {}",
+                        candidate[:120],
+                        e,
+                    )
                     last_error = str(e)
                     continue
 

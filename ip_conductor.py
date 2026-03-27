@@ -683,27 +683,41 @@ def run_console(
         sentence_text = None
         sentence_index = 0
         sentence_total = 0
+        source = "none"
 
         if captured_utterance is not None:
             sentence_text = captured_utterance.get("text")
             sentence_index = int(captured_utterance.get("index", 0))
             sentence_total = int(captured_utterance.get("total", 0))
+            source = "captured"
         elif voice_listener is not None and voice_listener.tts_enabled:
             utterance = voice_listener.get_current_utterance()
             if utterance is not None:
                 sentence_text = utterance.get("text")
                 sentence_index = int(utterance.get("index", 0))
                 sentence_total = int(utterance.get("total", 0))
+                source = "listener_current"
 
         if not sentence_text:
             with current_sentence_lock:
                 sentence_text = current_sentence_state["text"]
                 sentence_index = current_sentence_state["index"]
                 sentence_total = current_sentence_state["total"]
+                if sentence_text:
+                    source = "sentence_state"
 
         if not sentence_text:
+            logger.warning("[highlight] no utterance source available")
             output.write_line("No active utterance to highlight.")
             return
+
+        logger.info(
+            "[highlight] source={} sentence=[{}/{}] text={!r}",
+            source,
+            sentence_index,
+            sentence_total,
+            sentence_text[:120],
+        )
 
         result = service.create_highlight_for_current(sentence_text)
         # Write detailed result to console only — errors must not reach TTS.
