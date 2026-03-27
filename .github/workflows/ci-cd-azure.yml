@@ -127,6 +127,7 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ vars.VM_SSH_HOST }}
+          port: 2323
           username: ${{ secrets.VM_SSH_USER }}
           key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
           script_stop: true
