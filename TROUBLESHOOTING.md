@@ -94,6 +94,44 @@ The script iterates every workflow in the repository, orders runs newest-first (
 
 ---
 
+## Fast Production Debug Loop
+
+When investigating a production issue, use `vm/debug-loop.sh` to avoid waiting for the full CI/CD deploy cycle on every test.
+
+What it does:
+- Optionally fetches and checks out an experiment branch.
+- Detects changed files and decides whether to rebuild launcher, bot image, both, or neither (`--mode auto`).
+- Forces launcher runtime to `BOT_PULL_ON_START=false` during the debug run.
+- Relaunches the bot through the internal launcher endpoint (`http://tts-launcher:8080/launch`) to bypass nginx/TLS noise.
+- Prints bot status and filtered logs (`[highlight]`, `[utterance]`, `[speak]`, `instapaper`, errors).
+
+Basic usage on the VM:
+
+```bash
+cd ~/tts-conductor
+
+# Auto mode: infer what to rebuild from changed files
+./vm/debug-loop.sh
+
+# Pull and test an experiment branch
+./vm/debug-loop.sh --branch debug/highlight-investigation --mode auto
+
+# Force only bot rebuild + relaunch
+./vm/debug-loop.sh --mode bot-only
+
+# Force launcher-only rebuild/recreate
+./vm/debug-loop.sh --mode launcher-only
+
+# Relaunch only (no rebuild)
+./vm/debug-loop.sh --mode no-build
+```
+
+Notes:
+- This script is for fast troubleshooting on the VM and does not replace CI/CD for validated releases.
+- For stable production behavior, merge validated changes to `main` and let the standard deployment workflow run.
+
+---
+
 ## Production VM Troubleshooting
 
 For VM runtime incidents (bot does not join, token rotation not reflected, launcher restart issues), use the VM operation scripts documented in `README.md` under the "VM operation scripts" section.
