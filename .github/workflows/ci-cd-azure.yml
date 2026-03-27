@@ -98,3 +98,34 @@ jobs:
           docker build -t "${IMAGE_URI}" -t "${IMAGE_LATEST_URI}" .
           docker push "${IMAGE_URI}"
           docker push "${IMAGE_LATEST_URI}"
+
+  deploy_vm:
+    name: Deploy to Production VM
+    runs-on: ubuntu-latest
+    needs: publish_image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VM_SSH_HOST != ''
+    environment: production
+
+    steps:
+      - name: Validate SSH configuration
+        run: |
+          set -euo pipefail
+          if [ -z "${{ secrets.VM_SSH_PRIVATE_KEY }}" ]; then
+            echo "::error::Missing repository secret VM_SSH_PRIVATE_KEY."
+            exit 1
+          fi
+          if [ -z "${{ secrets.VM_SSH_USER }}" ]; then
+            echo "::error::Missing repository secret VM_SSH_USER."
+            exit 1
+          fi
+
+      - name: Run update-production.sh on VM
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ vars.VM_SSH_HOST }}
+          username: ${{ secrets.VM_SSH_USER }}
+          key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            cd /home/${{ secrets.VM_SSH_USER }}/tts-conductor
+            bash vm/update-production.sh main
