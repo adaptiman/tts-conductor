@@ -103,13 +103,17 @@ jobs:
     name: Deploy to Production VM
     runs-on: ubuntu-latest
     needs: publish_image
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VM_SSH_HOST != ''
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.publish_image.result == 'success'
     environment: production
 
     steps:
       - name: Validate SSH configuration
         run: |
           set -euo pipefail
+          if [ -z "${{ vars.VM_SSH_HOST }}" ]; then
+            echo "::error::Missing repository/environment variable VM_SSH_HOST."
+            exit 1
+          fi
           if [ -z "${{ secrets.VM_SSH_PRIVATE_KEY }}" ]; then
             echo "::error::Missing repository secret VM_SSH_PRIVATE_KEY."
             exit 1
