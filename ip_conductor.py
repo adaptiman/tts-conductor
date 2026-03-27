@@ -230,6 +230,12 @@ def handle_speak_auto(
             voice_listener.publish_app_message({"type": "console_line", "text": text})
 
     _write_status_line("Parsing article into sentences...")
+    active_bookmark_url = None
+    bookmark_info = manager.get_current_bookmark_info()
+    if bookmark_info is not None:
+        # Tuple format: (title, url, index, total_count)
+        active_bookmark_url = bookmark_info[1]
+
     sentences = manager.parse_current_article_sentences()
     if not sentences:
         _write_status_line("No article content available to speak.")
@@ -264,6 +270,7 @@ def handle_speak_auto(
                     sentence_text,
                     sentence_index=sentence_index,
                     sentence_total=len(sentences),
+                    bookmark_url=active_bookmark_url,
                 )
             elif sentence_state is not None and sentence_state_lock is not None:
                 with sentence_state_lock:
@@ -271,6 +278,7 @@ def handle_speak_auto(
                     sentence_state["text"] = sentence_text
                     sentence_state["index"] = sentence_index
                     sentence_state["total"] = sentence_total
+                    sentence_state["bookmark_url"] = active_bookmark_url
 
             if tts_active and voice_listener is not None:
                 voice_listener.reset_speech_done()
@@ -365,6 +373,7 @@ def handle_speak_auto(
                 sentence_state["text"] = None
                 sentence_state["index"] = 0
                 sentence_state["total"] = 0
+                sentence_state["bookmark_url"] = None
                 sentence_state["seek_delta"] = 0
                 sentence_state["paused"] = False
         output.write_line("\n--- Exiting Speak Mode ---")
@@ -447,6 +456,7 @@ def run_console(
         "text": None,
         "index": 0,
         "total": 0,
+        "bookmark_url": None,
         "repeat_current": False,
         "seek_delta": 0,
         "paused": False,
@@ -683,12 +693,14 @@ def run_console(
         sentence_text = None
         sentence_index = 0
         sentence_total = 0
+        bookmark_url = None
         source = "none"
 
         if captured_utterance is not None:
             sentence_text = captured_utterance.get("text")
             sentence_index = int(captured_utterance.get("index", 0))
             sentence_total = int(captured_utterance.get("total", 0))
+            bookmark_url = captured_utterance.get("bookmark_url")
             source = "captured"
         elif voice_listener is not None and voice_listener.tts_enabled:
             utterance = voice_listener.get_current_utterance()
@@ -696,6 +708,7 @@ def run_console(
                 sentence_text = utterance.get("text")
                 sentence_index = int(utterance.get("index", 0))
                 sentence_total = int(utterance.get("total", 0))
+                bookmark_url = utterance.get("bookmark_url")
                 source = "listener_current"
 
         if not sentence_text:
@@ -703,6 +716,7 @@ def run_console(
                 sentence_text = current_sentence_state["text"]
                 sentence_index = current_sentence_state["index"]
                 sentence_total = current_sentence_state["total"]
+                bookmark_url = current_sentence_state.get("bookmark_url")
                 if sentence_text:
                     source = "sentence_state"
 
@@ -712,14 +726,19 @@ def run_console(
             return
 
         logger.info(
-            "[highlight] source={} sentence=[{}/{}] text={!r}",
+            "[highlight] source={} sentence=[{}/{}] bookmark_url={} text={!r}",
             source,
             sentence_index,
             sentence_total,
+            bookmark_url,
             sentence_text[:120],
         )
 
-        result = service.create_highlight_for_current(sentence_text)
+        if bookmark_url:
+            result = service.create_highlight_for_bookmark_url(bookmark_url, sentence_text)
+        else:
+            # Fallback path for non-speak/manual highlights.
+            result = service.create_highlight_for_current(sentence_text)
         # Write detailed result to console only — errors must not reach TTS.
         console_output.write_lines(result.output_lines)
         if result.success:

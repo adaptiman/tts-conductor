@@ -152,6 +152,26 @@ class ConductorService:
             )
         return CommandResult(success=False, output_lines=[f"Error creating highlight: {error}"])
 
+    def create_highlight_for_bookmark_url(self, bookmark_url: str, highlight_text: str) -> CommandResult:
+        """Create a highlight for a specific bookmark URL."""
+        if not bookmark_url:
+            return CommandResult(success=False, output_lines=["Missing bookmark URL for highlight."])
+
+        success, _title, highlight, error = self.manager.create_highlight_for_bookmark_url(
+            bookmark_url,
+            highlight_text,
+        )
+        if success:
+            ellipsis = "..." if len(highlight) > 100 else ""
+            return CommandResult(
+                success=True,
+                output_lines=[
+                    "Highlight created successfully!",
+                    f"Highlighted text: {highlight[:100]}{ellipsis}",
+                ],
+            )
+        return CommandResult(success=False, output_lines=[f"Error creating highlight: {error}"])
+
     def _execute_read_number(self, cmd: str) -> CommandResult:
         try:
             parts = cmd.split()

@@ -958,6 +958,7 @@ class VoiceCommandListener:
         text: str,
         sentence_index: int = 0,
         sentence_total: int = 0,
+        bookmark_url: Optional[str] = None,
     ) -> None:
         """Register the next utterance before it is queued to TTS."""
         with self._utterance_lock:
@@ -965,6 +966,7 @@ class VoiceCommandListener:
                 "text": text,
                 "index": sentence_index,
                 "total": sentence_total,
+                "bookmark_url": bookmark_url,
             }
             logger.info(
                 "[utterance] prepared [{}/{}]: {!r}",

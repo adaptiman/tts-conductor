@@ -210,65 +210,86 @@ class ArticleManager:
             return (False, None, highlight_text, "No bookmarks found")
 
         if 0 <= self.current_index < len(marks):
-            m = marks[self.current_index]
-            title = m.title
+            return self._create_highlight_for_bookmark(marks[self.current_index], highlight_text, position)
 
-            if not highlight_text or not highlight_text.strip():
-                return (False, title, highlight_text, "No text provided for highlight")
+        return (False, None, highlight_text, "Current index is out of range")
 
-            highlight_text = highlight_text.strip()
+    def create_highlight_for_bookmark_url(self, bookmark_url, highlight_text, position=None):
+        """Creates a highlight for a bookmark resolved by URL.
 
-            requested_position = None
-            if isinstance(position, int) and position >= 0:
-                requested_position = position
+        Returns (success, title, highlight_text, error_msg).
+        """
+        if not bookmark_url:
+            return (False, None, highlight_text, "Missing bookmark URL")
 
-            # Instapaper can be strict about exact text/position matching.
-            # Try a small set of variants and prefer position-aware requests
-            # when we can locate the text in the article body.
-            article_text = str(getattr(m, "text", "") or "")
-            normalized_text = " ".join(highlight_text.split())
-            candidates = [highlight_text]
-            if normalized_text and normalized_text != highlight_text:
-                candidates.append(normalized_text)
+        marks = self._get_bookmarks()
+        if not marks:
+            return (False, None, highlight_text, "No bookmarks found")
 
-            last_error = None
-            for candidate in candidates:
-                try:
-                    if requested_position is not None and article_text:
-                        occurrence_index = self._highlight_occurrence_index(
-                            article_text,
-                            candidate,
-                            requested_position,
+        for bookmark in marks:
+            if str(getattr(bookmark, "url", "") or "") == str(bookmark_url):
+                return self._create_highlight_for_bookmark(bookmark, highlight_text, position)
+
+        return (False, None, highlight_text, "Bookmark URL not found in current list")
+
+    def _create_highlight_for_bookmark(self, bookmark, highlight_text, position=None):
+        """Create a highlight against a specific bookmark object."""
+        title = str(getattr(bookmark, "title", "") or "")
+
+        if not highlight_text or not highlight_text.strip():
+            return (False, title, highlight_text, "No text provided for highlight")
+
+        highlight_text = highlight_text.strip()
+
+        requested_position = None
+        if isinstance(position, int) and position >= 0:
+            requested_position = position
+
+        # Instapaper can be strict about exact text/position matching.
+        # Try a small set of variants and prefer position-aware requests
+        # when we can locate the text in the article body.
+        article_text = str(getattr(bookmark, "text", "") or "")
+        normalized_text = " ".join(highlight_text.split())
+        candidates = [highlight_text]
+        if normalized_text and normalized_text != highlight_text:
+            candidates.append(normalized_text)
+
+        last_error = None
+        for candidate in candidates:
+            try:
+                if requested_position is not None and article_text:
+                    occurrence_index = self._highlight_occurrence_index(
+                        article_text,
+                        candidate,
+                        requested_position,
+                    )
+                    if occurrence_index is not None:
+                        logger.info(
+                            "[highlight] creating with position occurrence_index={} candidate={!r}",
+                            occurrence_index,
+                            candidate[:120],
                         )
-                        if occurrence_index is not None:
-                            logger.info(
-                                "[highlight] creating with position occurrence_index={} candidate={!r}",
-                                occurrence_index,
-                                candidate[:120],
-                            )
-                            m.create_highlight(candidate, position=occurrence_index)
-                            return (True, title, candidate, None)
+                        bookmark.create_highlight(candidate, position=occurrence_index)
+                        return (True, title, candidate, None)
 
-                    # When we don't have a verified duplicate-selection index,
-                    # let Instapaper resolve the first matching occurrence.
-                    logger.info(
-                        "[highlight] creating without position candidate={!r}",
-                        candidate[:120],
-                    )
-                    m.create_highlight(candidate)
-                    return (True, title, candidate, None)
-                except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
-                    logger.warning(
-                        "[highlight] create failed for candidate={!r}: {}",
-                        candidate[:120],
-                        e,
-                    )
-                    last_error = str(e)
-                    continue
+                # When we don't have a verified duplicate-selection index,
+                # let Instapaper resolve the first matching occurrence.
+                logger.info(
+                    "[highlight] creating without position candidate={!r}",
+                    candidate[:120],
+                )
+                bookmark.create_highlight(candidate)
+                return (True, title, candidate, None)
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
+                logger.warning(
+                    "[highlight] create failed for candidate={!r}: {}",
+                    candidate[:120],
+                    e,
+                )
+                last_error = str(e)
+                continue
 
-            return (False, title, highlight_text, last_error or "Unknown highlight error")
-        else:
-            return (False, None, highlight_text, "Current index is out of range")
+        return (False, title, highlight_text, last_error or "Unknown highlight error")
 
     def archive_current_bookmark(self):
         """Archives the currently selected bookmark. Returns (success, title, error_msg)."""
