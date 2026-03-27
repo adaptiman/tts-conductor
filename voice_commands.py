@@ -1006,6 +1006,21 @@ class VoiceCommandListener:
             self._active_utterance = None
             self._pending_utterance = None
 
+    def _clear_utterance_tracking(self) -> None:
+        """Clear local utterance state after an intentional interruption.
+
+        In practice the pipeline stop frame can arrive noticeably later than the
+        command that requested an interruption. Clearing the local tracking state
+        immediately allows read-mode seek/repeat/resume commands to proceed
+        without waiting on that delayed callback.
+        """
+        with self._utterance_lock:
+            if self._active_utterance is not None:
+                self._last_completed_utterance = dict(self._active_utterance)
+                self._last_completed_at = time.monotonic()
+            self._active_utterance = None
+            self._pending_utterance = None
+
     def speak_text(self, text: str) -> None:
         """Inject text for immediate TTS synthesis through the configured pipeline.
 
@@ -1061,6 +1076,8 @@ class VoiceCommandListener:
             return
         if not self._loop or not self._task:
             return
+
+        self._clear_utterance_tracking()
 
         async def _interrupt() -> None:
             await self._task.queue_frame(InterruptionFrame())
