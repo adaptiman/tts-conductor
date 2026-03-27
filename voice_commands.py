@@ -966,6 +966,12 @@ class VoiceCommandListener:
                 "index": sentence_index,
                 "total": sentence_total,
             }
+            logger.info(
+                "[utterance] prepared [{}/{}]: {!r}",
+                sentence_index,
+                sentence_total,
+                text[:80],
+            )
 
     def get_current_utterance(self) -> Optional[dict[str, Any]]:
         """Return the best highlight target utterance.
@@ -997,14 +1003,36 @@ class VoiceCommandListener:
         with self._utterance_lock:
             if self._pending_utterance is not None:
                 self._active_utterance = dict(self._pending_utterance)
+                logger.info(
+                    "[utterance] started: {!r}",
+                    (self._active_utterance.get("text") or "")[:80],
+                )
+            else:
+                logger.warning("[utterance] _on_tts_started fired but _pending_utterance is None")
 
     def _on_tts_stopped(self) -> None:
         with self._utterance_lock:
             if self._active_utterance is not None:
+                logger.info(
+                    "[utterance] stopped (normal): {!r}",
+                    (self._active_utterance.get("text") or "")[:80],
+                )
                 self._last_completed_utterance = dict(self._active_utterance)
                 self._last_completed_at = time.monotonic()
-            self._active_utterance = None
-            self._pending_utterance = None
+                self._active_utterance = None
+                self._pending_utterance = None
+            else:
+                # _active_utterance is already None, meaning _clear_utterance_tracking()
+                # ran first (interrupt path).  Do NOT clear _pending_utterance here —
+                # it may already hold the freshly-registered next sentence, and wiping
+                # it would prevent _on_tts_started from promoting it to active.
+                logger.info(
+                    "[utterance] stopped (post-interrupt): active was None, "
+                    "preserving pending={!r}",
+                    (self._pending_utterance.get("text") or "")[:80]
+                    if self._pending_utterance
+                    else None,
+                )
 
     def _clear_utterance_tracking(self) -> None:
         """Clear local utterance state after an intentional interruption.
@@ -1015,11 +1043,13 @@ class VoiceCommandListener:
         without waiting on that delayed callback.
         """
         with self._utterance_lock:
+            prev_text = (self._active_utterance.get("text") or "")[:80] if self._active_utterance else None
             if self._active_utterance is not None:
                 self._last_completed_utterance = dict(self._active_utterance)
                 self._last_completed_at = time.monotonic()
             self._active_utterance = None
             self._pending_utterance = None
+            logger.info("[utterance] _clear_utterance_tracking: cleared (was active={!r})", prev_text)
 
     def speak_text(self, text: str) -> None:
         """Inject text for immediate TTS synthesis through the configured pipeline.
@@ -1077,6 +1107,7 @@ class VoiceCommandListener:
         if not self._loop or not self._task:
             return
 
+        logger.info("[utterance] interrupt_tts called")
         self._clear_utterance_tracking()
 
         async def _interrupt() -> None:

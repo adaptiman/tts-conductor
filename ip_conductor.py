@@ -14,6 +14,7 @@ import unicodedata
 from typing import cast
 
 from dotenv import load_dotenv
+from loguru import logger
 
 from article_manager import ArticleManager
 from conductor_service import ConductorService
@@ -281,6 +282,7 @@ def handle_speak_auto(
                     continue
 
                 voice_listener.speak_text(tts_sentence_text)
+                logger.info("[speak] queued [{}/{}]: {!r}", sentence_index, sentence_total, tts_sentence_text[:80])
 
                 # Wait for THIS sentence to become the active utterance first.
                 # Only once it is actually being spoken do we mirror it to chat.
@@ -288,6 +290,7 @@ def handle_speak_auto(
                 deadline = time.monotonic() + 60.0
                 while not stop_event.is_set():
                     if pause_event is not None and pause_event.is_set():
+                        logger.info("[speak] paused while waiting for utterance [{}/{}]", sentence_index, sentence_total)
                         break
 
                     utterance = voice_listener.get_active_utterance()
@@ -295,6 +298,7 @@ def handle_speak_auto(
                     if not started:
                         if utterance is not None and utterance.get("text") == sentence_text:
                             started = True
+                            logger.info("[speak] utterance confirmed active [{}/{}]", sentence_index, sentence_total)
                             local_output.write_line(f"[{sentence_index}/{sentence_total}]")
                             local_output.write_line(sentence_text)
                             voice_listener.publish_app_message(
@@ -309,12 +313,16 @@ def handle_speak_auto(
                                     "text": sentence_text,
                                 }
                             )
+                        elif utterance is not None:
+                            logger.debug("[speak] waiting for utterance match: got {!r}, want {!r}", (utterance.get("text") or "")[:60], tts_sentence_text[:60])
                     else:
                         if utterance is None:
+                            logger.info("[speak] utterance complete [{}/{}], advancing", sentence_index, sentence_total)
                             break
 
                     time.sleep(0.1)
                     if time.monotonic() >= deadline:
+                        logger.warning("[speak] timeout waiting for utterance [{}/{}]; started={}", sentence_index, sentence_total, started)
                         output.write_line("[tts] Speech wait timeout; advancing to next sentence.")
                         break
 
@@ -330,9 +338,11 @@ def handle_speak_auto(
                         sentence_state["seek_delta"] = 0
 
                 if should_repeat_current:
+                    logger.info("[speak] repeat_current=True for [{}/{}]", sentence_index, sentence_total)
                     continue
 
                 if seek_delta != 0:
+                    logger.info("[speak] seek_delta={} from [{}/{}]", seek_delta, sentence_index, sentence_total)
                     sentence_offset = max(0, min(sentence_total - 1, sentence_offset + seek_delta))
                     continue
             else:
