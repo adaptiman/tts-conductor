@@ -854,6 +854,16 @@ The `vm/` folder includes helper scripts for common production operations:
 - `vm/tts-conductor-restart.sh`: Force recreate launcher services and trigger a bot launch.
 - `vm/docker-maintenance.sh`: Prune Docker resources and log reclaimed space to `/etc/tts-conductor/docker-maintenance.log`.
 - `vm/refresh-bot-token.sh`: Re-auth to Azure/ACR, restart launcher services, relaunch the bot, and verify the running bot token hash matches `.env`.
+- `vm/rotate-daily-token-and-relaunch.sh`: Generate a fresh Daily meeting token, update the bot `.env`, recreate the launcher stack, and relaunch the bot — use after a Daily token expires.
+- `vm/cleanup-workflow-runs.sh`: Delete old GitHub Actions workflow runs via the GitHub API to keep the Actions history manageable. Requires `GH_TOKEN` (or `GITHUB_TOKEN`) in the repo-root `.env` and the [`gh` CLI](https://cli.github.com) installed. Defaults: keep 50 runs, dry-run mode on.
+
+  ```bash
+  # Preview what would be deleted (dry run, keep newest 20):
+  KEEP=20 DRY_RUN=true ./vm/cleanup-workflow-runs.sh
+
+  # Actually delete, keeping newest 20:
+  KEEP=20 DRY_RUN=false ./vm/cleanup-workflow-runs.sh
+  ```
 
 For the end-to-end in-room user command flow, see [USER_JOURNEY.md](USER_JOURNEY.md).
 

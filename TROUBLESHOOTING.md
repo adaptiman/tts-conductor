@@ -59,6 +59,41 @@ If problems persist, check:
 - Installed VS Code extensions
 - Git configuration for hooks
 
+## GitHub Actions: Cleaning Up Old Workflow Runs
+
+Over time, the Actions history can accumulate hundreds of runs, making the GitHub UI slow to load. The script `vm/cleanup-workflow-runs.sh` deletes completed runs beyond a configurable threshold.
+
+**Prerequisites:**
+- [`gh` CLI](https://cli.github.com) installed on the machine running the script.
+- A GitHub personal access token with `repo` scope (or a fine-grained token with `Actions: write` permission) stored as `GH_TOKEN` in the repo-root `.env`:
+  ```
+  GH_TOKEN=github_pat_...
+  ```
+
+**Usage:**
+
+```bash
+cd ~/tts-conductor
+
+# Preview what would be deleted, keeping the newest 20 runs per workflow:
+KEEP=20 DRY_RUN=true ./vm/cleanup-workflow-runs.sh
+
+# Actually delete, keeping the newest 20:
+KEEP=20 DRY_RUN=false ./vm/cleanup-workflow-runs.sh
+```
+
+Environment variables (all optional, can be set inline or in `.env`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KEEP` | `50` | Number of most-recent completed runs to preserve per workflow |
+| `DRY_RUN` | `true` | Set to `false` to perform deletions; `true` only reports what would be deleted |
+| `GH_TOKEN` | _(from `.env`)_ | GitHub API token; falls back to `GITHUB_TOKEN` if set |
+
+The script iterates every workflow in the repository, orders runs newest-first (as returned by the GitHub API), skips workflows with `≤ KEEP` runs, and deletes the remainder one at a time with a small delay to avoid rate-limiting.
+
+---
+
 ## Production VM Troubleshooting
 
 For VM runtime incidents (bot does not join, token rotation not reflected, launcher restart issues), use the VM operation scripts documented in `README.md` under the "VM operation scripts" section.
