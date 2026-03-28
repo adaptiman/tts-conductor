@@ -382,11 +382,17 @@ class ArticleManager:
             self._nlp = spacy.load("en_core_web_sm")
         return self._nlp
 
-    def parse_current_article_sentences(self):
+    def parse_current_article_sentences(self, with_positions=False):
         """Parse the current article into sentences using spaCy.
 
+        Args:
+            with_positions: When True, include each sentence's character
+                offset in the article text.
+
         Returns:
-            list[str]: A list of sentence strings, or None if no article is available.
+            list[str] | list[tuple[str, int]]: Sentence text values, or
+                (sentence_text, char_offset) tuples when with_positions=True.
+                Returns None if no article is available.
         """
         article_text = self.get_current_article()
         if not article_text:
@@ -401,8 +407,15 @@ class ArticleManager:
         # Extract sentences
         sentences = []
         for sent in doc.sents:
-            text = sent.text.strip()
+            raw_text = sent.text
+            text = raw_text.strip()
             if text:
-                sentences.append(text)
+                if with_positions:
+                    # Keep offsets aligned with stripped sentence text.
+                    left_trim = len(raw_text) - len(raw_text.lstrip())
+                    start_char = sent.start_char + left_trim
+                    sentences.append((text, start_char))
+                else:
+                    sentences.append(text)
 
         return sentences if sentences else None
