@@ -937,7 +937,7 @@ def run_console(
             active = voice_listener.get_active_utterance()
             if active is not None:
                 paused_on_index = int(active.get("index", 0) or 0)
-        
+
         # Fallback to sentence_state if no active utterance
         if paused_on_index == 0:
             with current_sentence_lock:
@@ -973,7 +973,7 @@ def run_console(
         was_just_paused = False
         with current_sentence_lock:
             was_just_paused = bool(current_sentence_state.get("was_just_paused", False))
-        
+
         if was_just_paused:
             # We were paused and speak mode has finished (e.g., after last sentence)
             # Just clear the pause state and acknowledge
