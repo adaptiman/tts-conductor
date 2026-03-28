@@ -856,7 +856,7 @@ def run_console(
             )
             speak_thread.start()
 
-    def _stop_voice_speak_mode():
+    def _stop_voice_speak_mode(announce: bool = True):
         nonlocal speak_thread
         speak_stop_event.set()
         speak_pause_event.clear()
@@ -868,7 +868,8 @@ def run_console(
             thread = speak_thread
 
         if thread is not None and thread.is_alive():
-            output.write_line("Stopping speak mode...")
+            if announce:
+                output.write_line("Stopping speak mode...")
             thread.join(timeout=2)
 
         with speak_state_lock:
@@ -1281,7 +1282,7 @@ def run_console(
                     return
 
                 if _is_speak_running() and _is_navigation_mode_command_input(command):
-                    _stop_voice_speak_mode()
+                    _stop_voice_speak_mode(announce=False)
 
                 if command == "delete":
                     _handle_voice_delete()
@@ -1499,7 +1500,7 @@ def run_console(
                     continue
 
                 if _is_speak_running() and _is_navigation_mode_command_input(cmd):
-                    _stop_voice_speak_mode()
+                    _stop_voice_speak_mode(announce=False)
 
                 result = service.execute_command(cmd)
 
