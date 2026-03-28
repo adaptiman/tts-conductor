@@ -687,6 +687,7 @@ def run_console(
         "paused": False,
         "replay_final_sentence_once": False,
         "replay_final_sentence_index": 0,
+        "was_just_paused": False,
     }
     current_sentence_lock = threading.Lock()
 
@@ -910,6 +911,7 @@ def run_console(
         speak_pause_event.set()
         with current_sentence_lock:
             current_sentence_state["paused"] = True
+            current_sentence_state["was_just_paused"] = True
             current_sentence_state["repeat_current"] = True
             current_sentence_state["repeat_target_index"] = paused_on_index
             logger.info(
@@ -930,6 +932,22 @@ def run_console(
                 # repeat_current and repeat_target_index were already set during pause
                 # Just need to clear the pause flag to resume the loop
             output.write_line("[voice] Read mode resumed.")
+            return
+
+        # Check if we just paused (thread has exited but was_just_paused is still set)
+        was_just_paused = False
+        with current_sentence_lock:
+            was_just_paused = bool(current_sentence_state.get("was_just_paused", False))
+        
+        if was_just_paused:
+            # We were paused and speak mode has finished (e.g., after last sentence)
+            # Just clear the pause state and acknowledge
+            with current_sentence_lock:
+                current_sentence_state["paused"] = False
+                current_sentence_state["was_just_paused"] = False
+                current_sentence_state["repeat_current"] = False
+                current_sentence_state["repeat_target_index"] = 0
+            output.write_line("[voice] Read mode finished.")
             return
 
         output.write_line("[voice] Speak mode is not active; starting read mode.")
