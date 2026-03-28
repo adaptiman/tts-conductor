@@ -398,10 +398,17 @@ def handle_speak_auto(
 
     try:
         sentence_offset = 0
-        while sentence_offset < sentence_total:
+        reached_end = False
+        while sentence_offset < sentence_total or reached_end:
             if pause_event is not None and pause_event.is_set():
                 while pause_event.is_set() and not stop_event.is_set():
                     time.sleep(0.1)
+
+            # Skip sentence processing if we've reached the end
+            if sentence_offset >= sentence_total:
+                # At end of article, just wait for stop/pause/other commands
+                time.sleep(0.1)
+                continue
 
             sentence_index = sentence_offset + 1
             sentence_text, sentence_position = sentence_entries[sentence_offset]
@@ -552,20 +559,15 @@ def handle_speak_auto(
                         break
                     time.sleep(0.1)
 
+            sentence_offset += 1
+            
+            # After processing final sentence, mark as reached_end instead of exiting
+            if sentence_offset >= sentence_total:
+                logger.info("[speak] reached end of article; waiting for stop/archive/delete command")
+                reached_end = True
+            
             if stop_event.is_set():
                 break
-
-            # Check if we just processed the last sentence
-            if sentence_offset == sentence_total - 1:
-                # Auto-pause instead of exiting, so thread stays alive for stop/archive/delete
-                logger.info("[speak] reached end of article; auto-pausing in speak mode")
-                speak_pause_event.set()
-                with current_sentence_lock:
-                    current_sentence_state["paused"] = True
-                    current_sentence_state["was_just_paused"] = True
-                continue
-            
-            sentence_offset += 1
     finally:
         # Check if we should replay the final sentence once (marked during highlight)
         replay_final_once = False
