@@ -881,6 +881,12 @@ def run_console(
             if speak_thread is not None and not speak_thread.is_alive():
                 speak_thread = None
 
+    def _stop_and_advance_to_next(announce: bool = True):
+        was_running = _is_speak_running()
+        _stop_voice_speak_mode(announce=announce)
+        if was_running:
+            _print_result(service.execute_command("next"))
+
     def _is_navigation_mode_command_input(command: str) -> bool:
         lower = command.strip().lower()
         if not lower:
@@ -1305,7 +1311,7 @@ def run_console(
                     return
 
                 if command == "stop":
-                    _stop_voice_speak_mode()
+                    _stop_and_advance_to_next(announce=True)
                     output.write_prompt_hint()
                     return
 
@@ -1501,6 +1507,11 @@ def run_console(
                     voice_listener.interrupt_tts()
 
                 if _handle_speak_sentence_command(cmd):
+                    output.write_prompt_hint()
+                    continue
+
+                if cmd.lower() == "stop":
+                    _stop_and_advance_to_next(announce=True)
                     output.write_prompt_hint()
                     continue
 
