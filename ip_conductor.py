@@ -364,7 +364,7 @@ def handle_speak_auto(
         active_bookmark_url = bookmark_info[1]
 
     sentence_entries = manager.parse_current_article_sentences(with_positions=True)
-    sentences = [text for text, _ in sentence_entries] if sentence_entries else None
+    sentences = [text for text, _, _ in sentence_entries] if sentence_entries else None
     if not sentences:
         _write_status_line("No article content available to speak.")
         return
@@ -384,7 +384,7 @@ def handle_speak_auto(
         float(os.getenv("SPEAK_SENTENCE_WAIT_TIMEOUT_SECONDS", "15")),
     )
 
-    def _set_current_sentence_state(text, index, total, bookmark_url, position):
+    def _set_current_sentence_state(text, index, total, bookmark_url, position, can_highlight):
         if sentence_state is None or sentence_state_lock is None:
             return
 
@@ -395,6 +395,7 @@ def handle_speak_auto(
             sentence_state["total"] = total
             sentence_state["bookmark_url"] = bookmark_url
             sentence_state["position"] = position
+            sentence_state["can_highlight"] = bool(can_highlight)
 
     try:
         sentence_offset = 0
@@ -416,7 +417,7 @@ def handle_speak_auto(
                 continue
 
             sentence_index = sentence_offset + 1
-            sentence_text, sentence_position = sentence_entries[sentence_offset]
+            sentence_text, sentence_position, sentence_can_highlight = sentence_entries[sentence_offset]
             tts_sentence_text = _sanitize_tts_text(sentence_text)
             if stop_event.is_set():
                 break
@@ -428,6 +429,7 @@ def handle_speak_auto(
                     sentence_total,
                     active_bookmark_url,
                     sentence_position,
+                    sentence_can_highlight,
                 )
 
             if tts_active and voice_listener is not None:
@@ -437,6 +439,7 @@ def handle_speak_auto(
                     sentence_total=len(sentences),
                     bookmark_url=active_bookmark_url,
                     position=sentence_position,
+                    can_highlight=sentence_can_highlight,
                 )
 
             if tts_active and voice_listener is not None:
@@ -488,6 +491,7 @@ def handle_speak_auto(
                                 sentence_total,
                                 active_bookmark_url,
                                 sentence_position,
+                                sentence_can_highlight,
                             )
                             local_output.write_line(f"[{sentence_index}/{sentence_total}]")
                             local_output.write_line(sentence_text)
@@ -610,6 +614,7 @@ def handle_speak_auto(
                 sentence_state["total"] = 0
                 sentence_state["bookmark_url"] = None
                 sentence_state["position"] = None
+                sentence_state["can_highlight"] = True
                 sentence_state["repeat_current"] = False
                 sentence_state["repeat_target_index"] = 0
                 sentence_state["seek_delta"] = 0
@@ -698,6 +703,7 @@ def run_console(
         "total": 0,
         "bookmark_url": None,
         "position": None,
+        "can_highlight": True,
         "repeat_current": False,
         "repeat_target_index": 0,
         "seek_delta": 0,
@@ -717,6 +723,7 @@ def run_console(
         "total": 0,
         "bookmark_url": None,
         "position": None,
+        "can_highlight": True,
         "captured_at": 0.0,
     }
 
@@ -727,6 +734,7 @@ def run_console(
         "total": 0,
         "bookmark_url": None,
         "position": None,
+        "can_highlight": True,
         "captured_at": 0.0,
         "source": "none",
     }
@@ -740,6 +748,7 @@ def run_console(
                 _interrupt_target["total"] = int(target.get("total", 0) or 0)
                 _interrupt_target["bookmark_url"] = target.get("bookmark_url")
                 _interrupt_target["position"] = target.get("position")
+                _interrupt_target["can_highlight"] = bool(target.get("can_highlight", True))
                 _interrupt_target["captured_at"] = now
                 _interrupt_target["source"] = source
             else:
@@ -748,6 +757,7 @@ def run_console(
                 _interrupt_target["total"] = 0
                 _interrupt_target["bookmark_url"] = None
                 _interrupt_target["position"] = None
+                _interrupt_target["can_highlight"] = True
                 _interrupt_target["captured_at"] = now
                 _interrupt_target["source"] = source
 
@@ -765,6 +775,7 @@ def run_console(
                 "total": int(_interrupt_target.get("total", 0) or 0),
                 "bookmark_url": _interrupt_target.get("bookmark_url"),
                 "position": _interrupt_target.get("position"),
+                "can_highlight": bool(_interrupt_target.get("can_highlight", True)),
                 "captured_at": captured_at,
                 "source": _interrupt_target.get("source", "none"),
             }
@@ -786,6 +797,7 @@ def run_console(
                 "total": int(_vad_snapshot.get("total", 0) or 0),
                 "bookmark_url": _vad_snapshot.get("bookmark_url"),
                 "position": _vad_snapshot.get("position"),
+                "can_highlight": bool(_vad_snapshot.get("can_highlight", True)),
                 "source": "vad_snapshot",
             }
             _set_interrupt_target(vad_target, "vad_snapshot")
@@ -818,6 +830,7 @@ def run_console(
                     "total": int(current_sentence_state.get("total", 0) or 0),
                     "bookmark_url": current_sentence_state.get("bookmark_url"),
                     "position": current_sentence_state.get("position"),
+                    "can_highlight": bool(current_sentence_state.get("can_highlight", True)),
                     "source": "sentence_state",
                 }
             else:
@@ -1109,6 +1122,7 @@ def run_console(
         sentence_total = 0
         bookmark_url = None
         sentence_position = None
+        can_highlight = True
         source = "none"
 
         if preferred_utterance is not None and preferred_utterance.get("text"):
@@ -1117,6 +1131,7 @@ def run_console(
             sentence_total = int(preferred_utterance.get("total", 0) or 0)
             bookmark_url = preferred_utterance.get("bookmark_url")
             sentence_position = preferred_utterance.get("position")
+            can_highlight = bool(preferred_utterance.get("can_highlight", True))
             source = str(preferred_utterance.get("source") or "pre_interrupt_utterance")
         else:
             listener_utterance = None
@@ -1129,6 +1144,7 @@ def run_console(
                 sentence_total = int(listener_utterance.get("total", 0) or 0)
                 bookmark_url = listener_utterance.get("bookmark_url")
                 sentence_position = listener_utterance.get("position")
+                can_highlight = bool(listener_utterance.get("can_highlight", True))
                 source = "listener_current"
             else:
                 # Next fallback: VAD snapshot — captured the instant the user
@@ -1140,6 +1156,7 @@ def run_console(
                     sentence_total = int(_vad_snapshot.get("total", 0) or 0)
                     bookmark_url = _vad_snapshot.get("bookmark_url")
                     sentence_position = _vad_snapshot.get("position")
+                    can_highlight = bool(_vad_snapshot.get("can_highlight", True))
                     source = "vad_snapshot"
                 else:
                     # Final fallback: current sentence state.
@@ -1149,11 +1166,23 @@ def run_console(
                         sentence_total = int(current_sentence_state.get("total", 0) or 0)
                         bookmark_url = current_sentence_state.get("bookmark_url")
                         sentence_position = current_sentence_state.get("position")
+                        can_highlight = bool(current_sentence_state.get("can_highlight", True))
                     source = "sentence_state"
 
         if not sentence_text:
             logger.warning("[highlight] no utterance source available")
             output.write_line("No active utterance to highlight.")
+            return False
+
+        if not can_highlight:
+            logger.info(
+                "[highlight] blocked non-highlightable sentence source={} sentence=[{}/{}] text={!r}",
+                source,
+                sentence_index,
+                sentence_total,
+                sentence_text[:120],
+            )
+            output.write_line("This sentence cannot be highlighted.")
             return False
 
         logger.info(
@@ -1329,31 +1358,32 @@ def run_console(
                     preferred_utterance = None
                     if _is_speak_running() and voice_listener is not None and voice_listener.tts_enabled:
                         preferred_utterance = _capture_command_interrupt_target()
-                        repeat_target_index = int(preferred_utterance.get("index", 0) or 0) if preferred_utterance else 0
-                        source = preferred_utterance.get("source", "") if preferred_utterance else ""
-                        
-                        # Check if this is the final sentence from listener_current
-                        is_final_sentence = (
-                            preferred_utterance
-                            and int(preferred_utterance.get("index", 0) or 0) > 0
-                            and int(preferred_utterance.get("index", 0) or 0) == int(preferred_utterance.get("total", 0) or 0)
-                        )
-                        
-                        with current_sentence_lock:
-                            if source == "listener_current" and is_final_sentence:
-                                # Mark for post-loop replay in finally block (one time only)
-                                current_sentence_state["replay_final_sentence_once"] = True
-                                current_sentence_state["replay_final_sentence_index"] = repeat_target_index
-                                logger.info(
-                                    "[highlight] Final sentence replay marked: sentence=[{}/{}] source={}",
-                                    repeat_target_index,
-                                    int(preferred_utterance.get("total", 0) or 0),
-                                    source,
-                                )
-                            else:
-                                current_sentence_state["repeat_current"] = True
-                                current_sentence_state["repeat_target_index"] = repeat_target_index
-                        voice_listener.interrupt_tts()
+                        if preferred_utterance is None or bool(preferred_utterance.get("can_highlight", True)):
+                            repeat_target_index = int(preferred_utterance.get("index", 0) or 0) if preferred_utterance else 0
+                            source = preferred_utterance.get("source", "") if preferred_utterance else ""
+
+                            # Check if this is the final sentence from listener_current
+                            is_final_sentence = (
+                                preferred_utterance
+                                and int(preferred_utterance.get("index", 0) or 0) > 0
+                                and int(preferred_utterance.get("index", 0) or 0) == int(preferred_utterance.get("total", 0) or 0)
+                            )
+
+                            with current_sentence_lock:
+                                if source == "listener_current" and is_final_sentence:
+                                    # Mark for post-loop replay in finally block (one time only)
+                                    current_sentence_state["replay_final_sentence_once"] = True
+                                    current_sentence_state["replay_final_sentence_index"] = repeat_target_index
+                                    logger.info(
+                                        "[highlight] Final sentence replay marked: sentence=[{}/{}] source={}",
+                                        repeat_target_index,
+                                        int(preferred_utterance.get("total", 0) or 0),
+                                        source,
+                                    )
+                                else:
+                                    current_sentence_state["repeat_current"] = True
+                                    current_sentence_state["repeat_target_index"] = repeat_target_index
+                            voice_listener.interrupt_tts()
                     _highlight_current_utterance(preferred_utterance)
                     output.write_prompt_hint()
                     return
@@ -1376,6 +1406,7 @@ def run_console(
                     _vad_snapshot["total"] = int(current_sentence_state.get("total", 0) or 0)
                     _vad_snapshot["bookmark_url"] = current_sentence_state.get("bookmark_url")
                     _vad_snapshot["position"] = current_sentence_state.get("position")
+                    _vad_snapshot["can_highlight"] = bool(current_sentence_state.get("can_highlight", True))
                     _vad_snapshot["captured_at"] = now
                 logger.info(
                     "[vad] snapshot [{}/{}]: {!r}",

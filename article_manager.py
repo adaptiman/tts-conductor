@@ -390,8 +390,9 @@ class ArticleManager:
                 offset in the article text.
 
         Returns:
-            list[str] | list[tuple[str, int]]: Sentence text values, or
-                (sentence_text, char_offset) tuples when with_positions=True.
+            list[str] | list[tuple[str, int, bool]]: Sentence text values, or
+                (sentence_text, char_offset, can_highlight) tuples when
+                with_positions=True.
                 Returns None if no article is available.
         """
         article_text = self.get_current_article()
@@ -414,13 +415,13 @@ class ArticleManager:
                     # Keep offsets aligned with stripped sentence text.
                     left_trim = len(raw_text) - len(raw_text.lstrip())
                     start_char = sent.start_char + left_trim
-                    sentences.append((text, start_char))
+                    sentences.append((text, start_char, True))
                 else:
                     sentences.append(text)
 
         # Add a synthetic final sentence for read mode.
         if with_positions:
-            sentences.append(("End of article.", len(article_text)))
+            sentences.append(("End of article.", len(article_text), False))
         else:
             sentences.append("End of article.")
 
