@@ -370,7 +370,7 @@ def handle_speak_auto(
         return
 
     _write_status_line(f"\n--- Entering Speak Mode ({len(sentences)} sentences) ---")
-    controls_line = "Voice controls: say 'stop' to exit."
+    controls_line = "Voice controls - say pause, continue, or stop to return to the index."
     _write_status_line(f"{controls_line}\n")
     if tts_active and voice_listener is not None:
         # Speak and wait once so read-mode guidance isn't skipped.
