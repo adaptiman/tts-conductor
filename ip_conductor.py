@@ -569,12 +569,12 @@ def handle_speak_auto(
                     time.sleep(0.1)
 
             sentence_offset += 1
-            
+
             # After processing final sentence, mark as reached_end instead of exiting
             if sentence_offset >= sentence_total:
                 logger.info("[speak] reached end of article; waiting for stop/archive/delete command")
                 reached_end = True
-            
+
             if stop_event.is_set():
                 break
     finally:
@@ -585,7 +585,7 @@ def handle_speak_auto(
             with sentence_state_lock:
                 replay_final_once = bool(sentence_state.get("replay_final_sentence_once", False))
                 replay_final_index = int(sentence_state.get("replay_final_sentence_index", 0) or 0)
-        
+
         # Replay final sentence once if marked (safe: main loop is done, resources still available)
         if replay_final_once and replay_final_index > 0 and sentence_total > 0:
             try:
@@ -598,13 +598,11 @@ def handle_speak_auto(
                         replay_final_index,
                         sentence_total,
                     )
-                    if tts:
-                        audio_data = tts(sentence_text)
-                        if audio_data:
-                            transport.write(audio_data)
+                    if tts_active and voice_listener is not None and sentence_text:
+                        voice_listener.speak_text(sentence_text)
             except Exception as exc:
                 logger.error("[speak] Error during final sentence replay: {}", exc)
-        
+
         # Standard cleanup
         if sentence_state is not None and sentence_state_lock is not None:
             with sentence_state_lock:

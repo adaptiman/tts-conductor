@@ -1480,6 +1480,7 @@ class VoiceCommandListener:
 
         logger.warning("[room_audio] could not resolve local participant_id from any source")
         return None
+
     async def _start_daily_room_audio_observer(
         self,
         joined_data: Optional[dict[str, Any]] = None,
