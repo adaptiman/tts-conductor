@@ -555,6 +555,16 @@ def handle_speak_auto(
             if stop_event.is_set():
                 break
 
+            # Check if we just processed the last sentence
+            if sentence_offset == sentence_total - 1:
+                # Auto-pause instead of exiting, so thread stays alive for stop/archive/delete
+                logger.info("[speak] reached end of article; auto-pausing in speak mode")
+                speak_pause_event.set()
+                with current_sentence_lock:
+                    current_sentence_state["paused"] = True
+                    current_sentence_state["was_just_paused"] = True
+                continue
+            
             sentence_offset += 1
     finally:
         # Check if we should replay the final sentence once (marked during highlight)
