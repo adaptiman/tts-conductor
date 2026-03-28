@@ -911,6 +911,9 @@ def run_console(
             speak_pause_event.clear()
             with current_sentence_lock:
                 current_sentence_state["paused"] = False
+                # When resuming from pause, repeat the sentence we paused on
+                current_sentence_state["repeat_current"] = True
+                current_sentence_state["repeat_target_index"] = 0
             output.write_line("[voice] Read mode resumed.")
             return
 
