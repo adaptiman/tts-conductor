@@ -150,17 +150,31 @@ log "Updated DAILY_TOKEN in $BOT_ENV_FILE"
 log "Recreating launcher stack"
 "${COMPOSE_CMD[@]}" -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" up -d --force-recreate
 
-log "Stopping existing bot container via launcher"
-curl -sk -X POST "https://localhost:8443/stop" \
-  -H "x-job-launcher-secret: ${JOB_LAUNCHER_SHARED_SECRET}" \
-  >/dev/null || true
+log "Waiting for launcher health"
+for _ in $(seq 1 30); do
+  if curl -sk "https://localhost:8443/health" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
 
-sleep 2
+log "Removing existing bot container directly to avoid stale-env reuse"
+docker rm -f tts-conductor-bot >/dev/null 2>&1 || true
 
 log "Launching bot container via launcher"
-curl -sk -X POST "https://localhost:8443/launch" \
-  -H "x-job-launcher-secret: ${JOB_LAUNCHER_SHARED_SECRET}" \
-  >/dev/null
+launch_ok=""
+for _ in $(seq 1 20); do
+  launch_payload="$(curl -sk -X POST "https://localhost:8443/launch" \
+    -H "x-job-launcher-secret: ${JOB_LAUNCHER_SHARED_SECRET}" || true)"
+  if printf '%s' "$launch_payload" | grep -q '"ok":true'; then
+    launch_ok="$launch_payload"
+    break
+  fi
+  sleep 1
+done
+
+[[ -n "$launch_ok" ]] || fail "Launcher /launch did not return ok=true"
+log "Launch response: $launch_ok"
 
 log "Verifying token inside running bot container"
 docker exec tts-conductor-bot /bin/sh -lc 'python - <<PY

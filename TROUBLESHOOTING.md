@@ -144,7 +144,6 @@ cd ~/tts-conductor
 ```
 
 What this script verifies:
-- Re-authenticates host access to Azure/ACR (unless `SKIP_AZURE_LOGIN=true`)
 - Recreates launcher services and relaunches `tts-conductor-bot`
 - Confirms the running bot container's `DAILY_TOKEN` hash matches `.env`
 

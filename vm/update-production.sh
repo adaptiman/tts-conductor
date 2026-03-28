@@ -3,7 +3,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -51,41 +51,6 @@ launcher_post() {
     "$endpoint"
 }
 
-acr_registry_name_from_image() {
-  local image_ref="$1"
-  local registry_host
-
-  registry_host="${image_ref%%/*}"
-  if [[ "$registry_host" != *.* ]]; then
-    return 1
-  fi
-
-  if [[ "$registry_host" == *.azurecr.io ]]; then
-    printf '%s\n' "${registry_host%%.azurecr.io}"
-    return 0
-  fi
-
-  return 1
-}
-
-azure_login_service_principal() {
-  local client_id="$1"
-  local client_secret="$2"
-  local tenant_id="$3"
-
-  if [[ -z "$client_id" || -z "$client_secret" || -z "$tenant_id" ]]; then
-    fail "Missing Azure service principal credentials. Set AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, and AZURE_TENANT_ID in the environment or in ${AZURE_AUTH_ENV_FILE}."
-  fi
-
-  log "Logging into Azure with service principal ${client_id}"
-  az login \
-    --service-principal \
-    --username "$client_id" \
-    --password "$client_secret" \
-    --tenant "$tenant_id" \
-    >/dev/null
-}
-
 if docker compose version >/dev/null 2>&1; then
   COMPOSE_CMD=(docker compose)
 elif command -v docker-compose >/dev/null 2>&1; then
@@ -99,7 +64,6 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VM_DIR="$REPO_DIR/vm"
 COMPOSE_FILE="$VM_DIR/docker-compose.yml"
 COMPOSE_ENV_FILE="$VM_DIR/.env"
-AZURE_AUTH_ENV_FILE="${AZURE_AUTH_ENV_FILE:-/etc/tts-conductor/update-production.env}"
 TARGET_BRANCH="${1:-main}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-https://localhost:8443/health}"
 HEALTHCHECK_RETRIES="${HEALTHCHECK_RETRIES:-12}"
@@ -148,35 +112,34 @@ fi
 # (sourcing causes unquoted multi-word values like BOT_COMMAND to be executed as
 # commands).
 BOT_IMAGE="$(env_get_from_file "$COMPOSE_ENV_FILE" BOT_IMAGE)"
-BOT_IMAGE="${BOT_IMAGE:-acrttsconductorprod.azurecr.io/tts-conductor:latest}"
+BOT_IMAGE="${BOT_IMAGE:-tts-conductor:local}"
 JOB_LAUNCHER_SHARED_SECRET="$(env_get_from_file "$COMPOSE_ENV_FILE" JOB_LAUNCHER_SHARED_SECRET)"
-AZURE_CLIENT_ID="${AZURE_CLIENT_ID:-$(env_get_from_file "$AZURE_AUTH_ENV_FILE" AZURE_CLIENT_ID)}"
-AZURE_CLIENT_SECRET="${AZURE_CLIENT_SECRET:-$(env_get_from_file "$AZURE_AUTH_ENV_FILE" AZURE_CLIENT_SECRET)}"
-AZURE_TENANT_ID="${AZURE_TENANT_ID:-$(env_get_from_file "$AZURE_AUTH_ENV_FILE" AZURE_TENANT_ID)}"
 
-PRE_PULL_BOT_IMAGE_ID="$(docker_image_id "$BOT_IMAGE")"
-
-if ACR_NAME="$(acr_registry_name_from_image "$BOT_IMAGE")"; then
-  require_command az
-  azure_login_service_principal "$AZURE_CLIENT_ID" "$AZURE_CLIENT_SECRET" "$AZURE_TENANT_ID"
-  log "Logging into Azure Container Registry: $ACR_NAME"
-  az acr login --name "$ACR_NAME" >/dev/null
+PRE_BUILD_BOT_IMAGE_ID="$(docker_image_id "$BOT_IMAGE")"
+BOT_IMAGE_CHANGED=0
+IMAGE_WAS_MISSING=0
+if [[ -z "$PRE_BUILD_BOT_IMAGE_ID" ]]; then
+  IMAGE_WAS_MISSING=1
+  log "Bot image is not present locally yet: $BOT_IMAGE"
 fi
 
-log "Pulling latest bot image: $BOT_IMAGE"
-docker pull "$BOT_IMAGE"
+if [[ "$REPO_CHANGED" -eq 1 || "$IMAGE_WAS_MISSING" -eq 1 ]]; then
+  log "Building bot image locally: $BOT_IMAGE"
+  docker build -t "$BOT_IMAGE" "$REPO_DIR"
 
-POST_PULL_BOT_IMAGE_ID="$(docker_image_id "$BOT_IMAGE")"
-BOT_IMAGE_CHANGED=0
-if [[ -n "$POST_PULL_BOT_IMAGE_ID" && "$PRE_PULL_BOT_IMAGE_ID" != "$POST_PULL_BOT_IMAGE_ID" ]]; then
-  BOT_IMAGE_CHANGED=1
-  if [[ -n "$PRE_PULL_BOT_IMAGE_ID" ]]; then
-    log "Bot image updated: ${PRE_PULL_BOT_IMAGE_ID:0:19} -> ${POST_PULL_BOT_IMAGE_ID:0:19}"
+  POST_BUILD_BOT_IMAGE_ID="$(docker_image_id "$BOT_IMAGE")"
+  if [[ -n "$POST_BUILD_BOT_IMAGE_ID" && "$PRE_BUILD_BOT_IMAGE_ID" != "$POST_BUILD_BOT_IMAGE_ID" ]]; then
+    BOT_IMAGE_CHANGED=1
+    if [[ -n "$PRE_BUILD_BOT_IMAGE_ID" ]]; then
+      log "Bot image updated: ${PRE_BUILD_BOT_IMAGE_ID:0:19} -> ${POST_BUILD_BOT_IMAGE_ID:0:19}"
+    else
+      log "Bot image built locally: ${POST_BUILD_BOT_IMAGE_ID:0:19}"
+    fi
   else
-    log "Bot image downloaded locally: ${POST_PULL_BOT_IMAGE_ID:0:19}"
+    log "Bot image build completed with no image-id change"
   fi
 else
-  log "No bot image update detected"
+  log "Skipping bot image rebuild (no repo change and image already exists)"
 fi
 
 if [[ "$REPO_CHANGED" -eq 0 && "$BOT_IMAGE_CHANGED" -eq 0 ]]; then
