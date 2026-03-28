@@ -897,9 +897,15 @@ def run_console(
 
         speak_pause_event.set()
         with current_sentence_lock:
+            # Capture the CURRENT sentence index so continue can replay it
+            paused_on_index = int(current_sentence_state.get("index", 0) or 0)
             current_sentence_state["paused"] = True
             current_sentence_state["repeat_current"] = True
-            current_sentence_state["repeat_target_index"] = 0
+            current_sentence_state["repeat_target_index"] = paused_on_index
+            logger.info(
+                "[speak] pause: captured sentence index {} for replay on continue",
+                paused_on_index,
+            )
 
         if voice_listener is not None and voice_listener.tts_enabled:
             voice_listener.interrupt_tts()
@@ -911,9 +917,8 @@ def run_console(
             speak_pause_event.clear()
             with current_sentence_lock:
                 current_sentence_state["paused"] = False
-                # When resuming from pause, repeat the sentence we paused on
-                current_sentence_state["repeat_current"] = True
-                current_sentence_state["repeat_target_index"] = 0
+                # repeat_current and repeat_target_index were already set during pause
+                # Just need to clear the pause flag to resume the loop
             output.write_line("[voice] Read mode resumed.")
             return
 
