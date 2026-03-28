@@ -51,6 +51,7 @@ from pipecat.frames.frames import (
     StartFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
+    UserStartedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -370,6 +371,7 @@ class VoiceCommandProcessor(FrameProcessor):
         command_emit_source: CommandEmitSource = "turn_stop",
         destructive_debounce_seconds: float = 3.0,
         normal_debounce_seconds: float = 1.0,
+        on_vad_start: Optional[Callable[[], None]] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -377,6 +379,7 @@ class VoiceCommandProcessor(FrameProcessor):
         self._command_emit_source = command_emit_source
         self._destructive_debounce_seconds = destructive_debounce_seconds
         self._normal_debounce_seconds = normal_debounce_seconds
+        self._on_vad_start = on_vad_start
         self._last_command_at = 0.0
         self._last_command: Optional[str] = None
         self._last_command_text: Optional[str] = None
@@ -385,6 +388,13 @@ class VoiceCommandProcessor(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+
+        if isinstance(frame, UserStartedSpeakingFrame) and direction == FrameDirection.DOWNSTREAM:
+            if self._on_vad_start is not None:
+                try:
+                    self._on_vad_start()
+                except Exception as exc:
+                    logger.error(f"[VoiceCommands] on_vad_start raised: {exc}")
 
         if isinstance(frame, (InterimTranscriptionFrame, TranscriptionFrame)):
             is_interim = isinstance(frame, InterimTranscriptionFrame)
@@ -716,8 +726,10 @@ class VoiceCommandListener:
         shutdown_when_room_empty: bool = False,
         empty_room_shutdown_seconds: Optional[float] = None,
         pipeline_config: Optional[VoicePipelineConfig] = None,
+        on_vad_start: Optional[Callable[[], None]] = None,
     ):
         self._on_command = on_command
+        self._on_vad_start = on_vad_start
         self._model = model
         self._device = device
         self._transport_mode = transport_mode.lower()
@@ -785,6 +797,10 @@ class VoiceCommandListener:
         self._metrics_observer: Optional[PipelineMetricsObserver] = None
         self._user_turn_processor: Optional[UserTurnProcessor] = None
         self._user_mute_processor: Optional[StrategyUserMuteProcessor] = None
+        self._room_audio_lock = threading.Lock()
+        self._room_audio_active = False
+        self._room_audio_last_voice_at = 0.0
+        self._room_audio_participant_id: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -959,6 +975,8 @@ class VoiceCommandListener:
         sentence_index: int = 0,
         sentence_total: int = 0,
         bookmark_url: Optional[str] = None,
+        position: Optional[int] = None,
+        can_highlight: bool = True,
     ) -> None:
         """Register the next utterance before it is queued to TTS."""
         with self._utterance_lock:
@@ -967,6 +985,8 @@ class VoiceCommandListener:
                 "index": sentence_index,
                 "total": sentence_total,
                 "bookmark_url": bookmark_url,
+                "position": position,
+                "can_highlight": bool(can_highlight),
             }
             logger.info(
                 "[utterance] prepared [{}/{}]: {!r}",
@@ -1000,6 +1020,13 @@ class VoiceCommandListener:
             if self._active_utterance is None:
                 return None
             return dict(self._active_utterance)
+
+    def get_pending_utterance(self) -> Optional[dict[str, Any]]:
+        """Return the utterance queued for next TTS start, if any."""
+        with self._utterance_lock:
+            if self._pending_utterance is None:
+                return None
+            return dict(self._pending_utterance)
 
     def _on_tts_started(self) -> None:
         with self._utterance_lock:
@@ -1333,6 +1360,174 @@ class VoiceCommandListener:
 
         self._empty_room_shutdown_task = asyncio.create_task(_shutdown_if_still_empty())
 
+    def _describe_room_audio_target(self) -> str:
+        with self._utterance_lock:
+            active = dict(self._active_utterance) if self._active_utterance is not None else None
+            last_completed = (
+                dict(self._last_completed_utterance)
+                if self._last_completed_utterance is not None
+                else None
+            )
+            pending = dict(self._pending_utterance) if self._pending_utterance is not None else None
+
+        utterance = active or last_completed or pending
+        if utterance is None:
+            return "none"
+
+        index = int(utterance.get("index", 0) or 0)
+        total = int(utterance.get("total", 0) or 0)
+        text = (utterance.get("text") or "")[:60]
+        if index and total:
+            return f"[{index}/{total}] {text!r}"
+        return repr(text)
+
+    async def _on_daily_room_audio(
+        self,
+        participant_id: str,
+        audio_data: Any,
+        audio_source: str,
+    ) -> None:
+        audio = getattr(audio_data, "audio_frames", None)
+        if not audio:
+            return
+
+        try:
+            samples = memoryview(audio).cast("h")
+        except (BufferError, TypeError, ValueError):
+            return
+
+        if len(samples) == 0:
+            return
+
+        peak = 0
+        for sample in samples:
+            amplitude = sample if sample >= 0 else -sample
+            if amplitude > peak:
+                peak = amplitude
+
+        threshold = max(
+            1,
+            int(float(os.getenv("DAILY_ROOM_AUDIO_PEAK_THRESHOLD", "600"))),
+        )
+        stop_secs = max(
+            0.05,
+            float(os.getenv("DAILY_ROOM_AUDIO_STOP_SECS", "0.25")),
+        )
+        now = time.monotonic()
+        started = False
+        stopped = False
+
+        with self._room_audio_lock:
+            if peak >= threshold:
+                self._room_audio_last_voice_at = now
+                if not self._room_audio_active:
+                    self._room_audio_active = True
+                    started = True
+            elif self._room_audio_active and (now - self._room_audio_last_voice_at) >= stop_secs:
+                self._room_audio_active = False
+                stopped = True
+
+        if started:
+            logger.info(
+                "[room_audio] started participant_id={} source={} peak={} target={}",
+                participant_id,
+                audio_source,
+                peak,
+                self._describe_room_audio_target(),
+            )
+        elif stopped:
+            logger.info(
+                "[room_audio] stopped participant_id={} source={} peak={} target={}",
+                participant_id,
+                audio_source,
+                peak,
+                self._describe_room_audio_target(),
+            )
+
+    def _resolve_local_daily_participant_id(
+        self,
+        transport: DailyTransport,
+        joined_data: Optional[dict[str, Any]] = None,
+    ) -> Optional[str]:
+        participant_id = getattr(transport, "participant_id", None)
+        if participant_id:
+            logger.debug(f"[room_audio] resolved from transport.participant_id: {participant_id}")
+            return str(participant_id)
+
+        if isinstance(joined_data, dict):
+            participants_payload = joined_data.get("participants")
+            if isinstance(participants_payload, dict):
+                # In Daily SDK, the local participant is keyed by "local"
+                local_participant = participants_payload.get("local")
+                if isinstance(local_participant, dict):
+                    pid = self._participant_id(local_participant)
+                    logger.info(f"[room_audio] resolved local participant_id from joined_data: {pid}")
+                    return pid
+
+        try:
+            participants = transport.participants()
+        except Exception as exc:
+            logger.debug(f"[room_audio] transport.participants() raised: {exc}")
+            participants = None
+
+        if isinstance(participants, dict):
+            # In Daily SDK, the local participant is keyed by "local"
+            local_participant = participants.get("local")
+            if isinstance(local_participant, dict):
+                pid = self._participant_id(local_participant)
+                logger.info(f"[room_audio] resolved local participant_id from transport.participants(): {pid}")
+                return pid
+
+        logger.warning("[room_audio] could not resolve local participant_id from any source")
+        return None
+    async def _start_daily_room_audio_observer(
+        self,
+        joined_data: Optional[dict[str, Any]] = None,
+    ) -> None:
+        transport = self._daily_transport
+        if transport is None:
+            return
+
+        participant_id: Optional[str] = None
+        max_wait_seconds = max(
+            0.0,
+            float(os.getenv("DAILY_ROOM_AUDIO_OBSERVER_WAIT_SECONDS", "6.0")),
+        )
+        poll_interval_seconds = 0.2
+        attempts = int(max_wait_seconds / poll_interval_seconds)
+        for _ in range(max(1, attempts)):
+            participant_id = self._resolve_local_daily_participant_id(
+                transport,
+                joined_data,
+            )
+            if participant_id:
+                break
+            await asyncio.sleep(poll_interval_seconds)
+
+        if not participant_id:
+            logger.warning("[room_audio] missing bot participant id; cannot observe room audio")
+            return
+
+        self._room_audio_participant_id = str(participant_id)
+        with self._room_audio_lock:
+            self._room_audio_active = False
+            self._room_audio_last_voice_at = 0.0
+
+        try:
+            await transport._client.capture_participant_audio(
+                str(participant_id),
+                self._on_daily_room_audio,
+                audio_source="microphone",
+                sample_rate=16000,
+                callback_interval_ms=20,
+            )
+            logger.info(
+                "[room_audio] observing Daily participant_id={} audio_source=microphone",
+                participant_id,
+            )
+        except Exception as exc:
+            logger.warning(f"[room_audio] failed to start observer: {exc}")
+
     async def _run_pipeline(self) -> None:
         """Build and run the pipecat pipeline."""
         try:
@@ -1568,6 +1763,7 @@ class VoiceCommandListener:
         command_processor = VoiceCommandProcessor(
             on_command=self._on_command,
             command_emit_source=self._pipeline_config.command_emit_source,
+            on_vad_start=self._on_vad_start,
         )
         self._metrics_observer = PipelineMetricsObserver(
             emit_metric=self._emit_metric,
@@ -1628,6 +1824,7 @@ class VoiceCommandListener:
         command_processor = VoiceCommandProcessor(
             on_command=self._on_command,
             command_emit_source=self._pipeline_config.command_emit_source,
+            on_vad_start=self._on_vad_start,
         )
         self._metrics_observer = PipelineMetricsObserver(
             emit_metric=self._emit_metric,
@@ -1646,7 +1843,7 @@ class VoiceCommandListener:
             )
 
         @transport.event_handler("on_joined")
-        async def on_joined(_transport, _data):
+        async def on_joined(_transport, data):
             self._daily_joined = True
             self._cancel_empty_room_shutdown()
             with self._pending_daily_lock:
@@ -1663,9 +1860,23 @@ class VoiceCommandListener:
                 for pending_text in pending_tts:
                     await self._task.queue_frame(TTSSpeakFrame(text=pending_text))
 
+            await self._start_daily_room_audio_observer(
+                data if isinstance(data, dict) else None
+            )
+
         @transport.event_handler("on_left")
         async def on_left(_transport):
             self._daily_joined = False
+
+        @transport.event_handler("on_active_speaker_changed")
+        async def on_active_speaker_changed(_transport, participant):
+            participant_id = self._participant_id(cast(dict[str, Any], participant)) if isinstance(participant, dict) else str(participant)
+            is_local = bool(participant.get("local")) if isinstance(participant, dict) else False
+            logger.info(
+                "[daily] active_speaker participant_id={} local={}",
+                participant_id,
+                is_local,
+            )
 
         @transport.event_handler("on_first_participant_joined")
         async def on_first_participant_joined(_transport, participant):

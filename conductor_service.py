@@ -132,14 +132,15 @@ class ConductorService:
             )
         return CommandResult(output_lines=[f"Error archiving bookmark: {error}"])
 
-    def create_highlight_for_current(self, highlight_text: str) -> CommandResult:
+    def create_highlight_for_current(self, highlight_text: str, position: Optional[int] = None) -> CommandResult:
         """Create a highlight on the currently selected bookmark."""
         info = self.manager.get_current_bookmark_info()
         if not info:
             return CommandResult(output_lines=["No bookmark to create highlight for."])
 
         success, _title, highlight, error = self.manager.create_highlight_for_current(
-            highlight_text
+            highlight_text,
+            position=position,
         )
         if success:
             ellipsis = "..." if len(highlight) > 100 else ""
@@ -152,7 +153,12 @@ class ConductorService:
             )
         return CommandResult(success=False, output_lines=[f"Error creating highlight: {error}"])
 
-    def create_highlight_for_bookmark_url(self, bookmark_url: str, highlight_text: str) -> CommandResult:
+    def create_highlight_for_bookmark_url(
+        self,
+        bookmark_url: str,
+        highlight_text: str,
+        position: Optional[int] = None,
+    ) -> CommandResult:
         """Create a highlight for a specific bookmark URL."""
         if not bookmark_url:
             return CommandResult(success=False, output_lines=["Missing bookmark URL for highlight."])
@@ -160,6 +166,7 @@ class ConductorService:
         success, _title, highlight, error = self.manager.create_highlight_for_bookmark_url(
             bookmark_url,
             highlight_text,
+            position=position,
         )
         if success:
             ellipsis = "..." if len(highlight) > 100 else ""
