@@ -751,13 +751,12 @@ This provides seamless integration without manual activation within VS Code.
 
 ## GitHub Actions and VM Deployment
 
-This repository is moving to a VM-only runtime and build model.
+This repository now uses a VM-only runtime and build model.
 
-Current workflow files:
-- `.github/workflows/ci-cd-azure.yml` (currently still includes Azure-specific publish/deploy logic and is being decommissioned)
-- `.github/workflows/deploy-launcher-function.yml` (legacy Azure Function workflow targeted for removal)
+Current workflow file:
+- `.github/workflows/ci-vm.yml` (CI checks on push/PR plus production VM deploy on `main` pushes)
 
-During the transition, treat CI checks as authoritative and prefer VM-local build/restart scripts for runtime updates.
+Treat CI checks as authoritative and prefer VM-local build/restart scripts for runtime updates.
 
 ### Current Production Architecture (VM-native webhook ingress)
 
