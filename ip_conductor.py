@@ -895,15 +895,25 @@ def run_console(
             output.write_line("[voice] Speak mode is not active.")
             return
 
+        # Capture the utterance that's ACTUALLY BEING PLAYED (not just sentence_state which may have advanced)
+        paused_on_index = 0
+        if voice_listener is not None and voice_listener.tts_enabled:
+            active = voice_listener.get_active_utterance()
+            if active is not None:
+                paused_on_index = int(active.get("index", 0) or 0)
+        
+        # Fallback to sentence_state if no active utterance
+        if paused_on_index == 0:
+            with current_sentence_lock:
+                paused_on_index = int(current_sentence_state.get("index", 0) or 0)
+
         speak_pause_event.set()
         with current_sentence_lock:
-            # Capture the CURRENT sentence index so continue can replay it
-            paused_on_index = int(current_sentence_state.get("index", 0) or 0)
             current_sentence_state["paused"] = True
             current_sentence_state["repeat_current"] = True
             current_sentence_state["repeat_target_index"] = paused_on_index
             logger.info(
-                "[speak] pause: captured sentence index {} for replay on continue",
+                "[speak] pause: captured sentence index {} (active_utterance) for replay on continue",
                 paused_on_index,
             )
 
