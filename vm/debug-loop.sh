@@ -201,7 +201,7 @@ else
 fi
 
 BOT_IMAGE="$(env_get_from_file "$COMPOSE_ENV_FILE" BOT_IMAGE)"
-BOT_IMAGE="${BOT_IMAGE:-acrttsconductorprod.azurecr.io/tts-conductor:latest}"
+BOT_IMAGE="${BOT_IMAGE:-tts-conductor:local}"
 
 if [[ "$do_build_bot" == true ]]; then
   log "Building bot image: $BOT_IMAGE"

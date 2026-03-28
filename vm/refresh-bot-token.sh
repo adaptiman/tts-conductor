@@ -7,12 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROOT_ENV_FILE="${ROOT_ENV_FILE:-$REPO_DIR/.env}"
 VM_ENV_FILE="${VM_ENV_FILE:-$SCRIPT_DIR/.env}"
-AZURE_AUTH_ENV_FILE="${AZURE_AUTH_ENV_FILE:-/etc/tts-conductor/update-production.env}"
 LAUNCH_URL="${LAUNCH_URL:-https://localhost:8443/launch}"
 STATUS_URL="${STATUS_URL:-https://localhost:8443/status}"
 BOT_CONTAINER_NAME="${BOT_CONTAINER_NAME:-tts-conductor-bot}"
 WAIT_SECONDS="${WAIT_SECONDS:-30}"
-SKIP_AZURE_LOGIN="${SKIP_AZURE_LOGIN:-false}"
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -50,23 +48,6 @@ compose_up() {
   fi
 }
 
-acr_registry_name_from_image() {
-  local image_ref="$1"
-  local registry_host
-
-  registry_host="${image_ref%%/*}"
-  if [[ "$registry_host" != *.* ]]; then
-    return 1
-  fi
-
-  if [[ "$registry_host" == *.azurecr.io ]]; then
-    printf '%s\n' "${registry_host%%.azurecr.io}"
-    return 0
-  fi
-
-  return 1
-}
-
 print_usage() {
   cat <<'EOF'
 Usage: ./refresh-bot-token.sh
@@ -75,20 +56,17 @@ Refreshes production bot runtime so it uses the latest DAILY_TOKEN in ../.env.
 
 Actions performed:
 1) Compute expected DAILY_TOKEN hash from repository .env
-2) Login to Azure + ACR (unless SKIP_AZURE_LOGIN=true)
-3) Recreate launcher containers and remove existing bot container
-4) Trigger launch endpoint and wait for bot container to start
-5) Compare expected token hash to in-container DAILY_TOKEN hash
+2) Recreate launcher containers and remove existing bot container
+3) Trigger launch endpoint and wait for bot container to start
+4) Compare expected token hash to in-container DAILY_TOKEN hash
 
 Environment overrides:
 - ROOT_ENV_FILE
 - VM_ENV_FILE
-- AZURE_AUTH_ENV_FILE
 - LAUNCH_URL
 - STATUS_URL
 - BOT_CONTAINER_NAME
 - WAIT_SECONDS
-- SKIP_AZURE_LOGIN=true to skip az login/acr login
 EOF
 }
 
@@ -112,32 +90,6 @@ expected_token="$(env_get_from_file "$ROOT_ENV_FILE" DAILY_TOKEN)"
 expected_hash="$(printf '%s' "$expected_token" | sha256sum | awk '{print $1}')"
 log "Expected DAILY_TOKEN length: ${#expected_token}"
 log "Expected DAILY_TOKEN sha256: $expected_hash"
-
-bot_image="$(env_get_from_file "$VM_ENV_FILE" BOT_IMAGE)"
-bot_image="${bot_image:-acrttsconductorprod.azurecr.io/tts-conductor:latest}"
-
-if [[ "$SKIP_AZURE_LOGIN" != "true" ]]; then
-  require_command az
-  [[ -f "$AZURE_AUTH_ENV_FILE" ]] || fail "Missing Azure auth file: $AZURE_AUTH_ENV_FILE"
-
-  # shellcheck disable=SC1090
-  source "$AZURE_AUTH_ENV_FILE"
-  [[ -n "${AZURE_CLIENT_ID:-}" ]] || fail "AZURE_CLIENT_ID missing in $AZURE_AUTH_ENV_FILE"
-  [[ -n "${AZURE_CLIENT_SECRET:-}" ]] || fail "AZURE_CLIENT_SECRET missing in $AZURE_AUTH_ENV_FILE"
-  [[ -n "${AZURE_TENANT_ID:-}" ]] || fail "AZURE_TENANT_ID missing in $AZURE_AUTH_ENV_FILE"
-
-  log "Logging into Azure as service principal"
-  az login --service-principal --username "$AZURE_CLIENT_ID" --password "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID" >/dev/null
-
-  if acr_name="$(acr_registry_name_from_image "$bot_image")"; then
-    log "Logging into ACR: $acr_name"
-    az acr login --name "$acr_name" >/dev/null
-  else
-    log "Skipping ACR login because BOT_IMAGE is not an Azure Container Registry image"
-  fi
-else
-  log "Skipping Azure/ACR login because SKIP_AZURE_LOGIN=true"
-fi
 
 cd "$SCRIPT_DIR"
 

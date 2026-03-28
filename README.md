@@ -749,72 +749,96 @@ If you're using VS Code with WSL, the project includes VS Code settings in `.vsc
 
 This provides seamless integration without manual activation within VS Code.
 
-## GitHub Actions and Azure Deployment
+## GitHub Actions and VM Deployment
 
-This repository includes:
-- `.github/workflows/ci-cd-azure.yml` for CI plus ACR image publishing.
-- `.github/workflows/deploy-launcher-function.yml` for manual Azure Function launcher deployment.
+This repository is moving to a VM-only runtime and build model.
 
-### What the workflow does
-- Runs CI (`lint.sh --check`, Python compile smoke check, and unit tests if a `tests/` directory exists) on every push and pull request.
-- On pushes to `main`, builds and pushes a container image to Azure Container Registry (ACR).
-- The VM launcher stack pulls the published ACR image and starts bot containers on demand.
+Current workflow files:
+- `.github/workflows/ci-cd-azure.yml` (currently still includes Azure-specific publish/deploy logic and is being decommissioned)
+- `.github/workflows/deploy-launcher-function.yml` (legacy Azure Function workflow targeted for removal)
 
-### Required GitHub configuration
+During the transition, treat CI checks as authoritative and prefer VM-local build/restart scripts for runtime updates.
 
-Add this GitHub Actions secret:
-- `AZURE_CREDENTIALS`: Service principal JSON used by `azure/login`.
+### Current Production Architecture (VM-native webhook ingress)
 
-Add these GitHub Actions repository variables:
-- `AZURE_CONTAINER_REGISTRY_NAME`
-- `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER` (example: `myregistry.azurecr.io`)
-- `IMAGE_REPOSITORY` (optional; defaults to `tts-conductor`)
-
-Add these GitHub Actions repository variables for the launcher deployment workflow:
-- `AZURE_RESOURCE_GROUP`
-- `AZURE_LAUNCHER_FUNCTIONAPP_NAME` (required for launcher deployment workflow)
-- `VM_LAUNCHER_BASE_URL` (example: `https://cookbook.thesweeneys.org:8443`)
-- `DAILY_WEBHOOK_ROOM_NAME` (optional; recommended room filter for webhook events)
-
-Add these additional GitHub Actions secrets for the launcher:
-- `JOB_LAUNCHER_SHARED_SECRET`: Shared secret expected in `x-job-launcher-secret` header.
-- `DAILY_HOOK_SHARED_SECRET` (optional): Shared secret expected by the Daily webhook endpoint.
-- `DAILY_HOOK_HMAC_SECRET` (optional): Daily HMAC key used to verify `x-daily-signature`.
-
-### Current Production Architecture
-
-Production runtime is split across three layers:
-- **Daily room hook**: room-level hook on the Daily room calls the public Azure Function.
-- **Azure Function launcher**: validates the hook request and relays start/status requests to the VM launcher over HTTPS.
-- **VM launcher stack**: persistent Docker Compose services on the VM (`tts-launcher` and `tts-launcher-proxy`) start the bot container from ACR when needed.
-
-The bot image source of truth is ACR:
-- Image: `acrttsconductorprod.azurecr.io/tts-conductor:latest`
-- Built automatically on pushes to `main`
-- Pulled onto the VM during deploy/maintenance
+Production runtime now centers on the VM launcher stack:
+- **Daily domain webhook**: Daily webhook delivery calls the VM HTTPS endpoint directly.
+- **VM launcher stack**: persistent Docker Compose services on the VM (`tts-launcher` and `tts-launcher-proxy`) validate webhook requests and start/stop bot containers on demand.
+- **Bot runtime container**: created per launch request, joins Daily room, and exits after room-empty grace logic.
 
 For an end-to-end user session flow (room join -> Instapaper navigation/read commands -> room leave), see [USER_JOURNEY.md](USER_JOURNEY.md).
 
-### Phase 5: HTTP launcher for VM on-demand starts
+### VM webhook endpoints
 
-The `launcher/` function app exposes:
-- `POST /api/launch`: Proxies launch requests to the VM launcher service.
-- `GET /api/status`: Proxies status checks to the VM launcher service.
-- `POST /api/daily-hook`: Handles Daily webhook events and maps them to VM start/stop actions.
+The VM launcher exposes:
+- `POST /daily-hook`: Handles Daily webhook events and maps them to bot start/stop actions.
+- `POST /launch`: Manual launch endpoint.
+- `POST /stop`: Manual stop endpoint.
+- `GET /status`: Bot/launcher status endpoint.
+- `GET /health`: Launcher health endpoint.
 
-The function app calls the VM launcher over HTTPS using `JOB_LAUNCHER_SHARED_SECRET` in the `x-job-launcher-secret` header.
+Daily webhook auth options:
+- `DAILY_HOOK_HMAC_SECRET` (preferred): validates Daily webhook signatures (`x-webhook-signature` + `x-webhook-timestamp`; legacy `x-daily-signature` also accepted).
+- `DAILY_HOOK_SHARED_SECRET` (fallback): validates shared secret from header, bearer token, query `secret`, or payload `secret`.
 
-Required launcher app settings:
-- `VM_LAUNCHER_BASE_URL`
-- `JOB_LAUNCHER_SHARED_SECRET`
+Optional webhook behavior controls:
+- `DAILY_WEBHOOK_ROOM_NAME` (ignore events for other rooms)
+- `DAILY_HOOK_ENABLE_STOP_ACTION` (defaults to `false`)
+- `DAILY_HOOK_START_ON_UNRECOGNIZED_EVENT` (defaults to `true`)
 
-Optional launcher app settings:
-- `VM_LAUNCHER_TIMEOUT_SECONDS` (defaults to 15)
-- `DAILY_HOOK_SHARED_SECRET`
-- `DAILY_HOOK_HMAC_SECRET`
-- `DAILY_WEBHOOK_ROOM_NAME` (ignore webhook events that do not match this room)
-- `DAILY_HOOK_ENABLE_STOP_ACTION` (defaults to `false`; when `false`, webhook stop events are ignored)
-- `DAILY_HOOK_START_ON_UNRECOGNIZED_EVENT` (defaults to `true`; treats authorized webhook payloads with unknown/missing event names as start actions)
+### Daily webhook automation (recommended)
+
+Configure/update your Daily webhook URL to call:
+
+```text
+https://cookbook.thesweeneys.org:8443/daily-hook
+```
+
+Recommended auth mode for Daily hooks:
+- Configure Daily webhooks to sign payloads with your HMAC key.
+- Set the same key in VM launcher env as `DAILY_HOOK_HMAC_SECRET`.
+- When `DAILY_HOOK_HMAC_SECRET` is set, launcher requires a valid Daily signature header and does not use shared-secret fallback.
+
+Event mapping:
+- `meeting.started` (or `first_non_owner_join=true`) -> launcher starts the VM bot container.
+- `participant.left` and `meeting.ended` -> launcher stops the VM bot container **only if** `DAILY_HOOK_ENABLE_STOP_ACTION=true`.
+
+Default behavior is start-only via webhook. This avoids unreliable stop semantics in rooms where the bot itself can keep the room non-empty; shutdown remains controlled by the bot's in-app idle logic.
+
+You can force a specific action with query parameters when needed:
+- `.../daily-hook?action=start`
+- `.../daily-hook?action=stop`
+
+### HMAC key rotation workflow
+
+Use this sequence to rotate webhook signing keys safely:
+1. Generate a new key and update `DAILY_HOOK_HMAC_SECRET` in `vm/.env` on the VM.
+2. Recreate launcher services so the new env is loaded:
+
+```bash
+cd ~/tts-conductor/vm
+docker compose up -d --force-recreate tts-launcher tts-launcher-proxy
+```
+
+3. Update the Daily webhook signing key to the same value.
+4. Trigger a test event (or use a room join) and verify launcher receives and handles it.
+
+If your Daily setup cannot sign hooks yet, temporary fallback is:
+- Set `DAILY_HOOK_SHARED_SECRET` and use `?secret=...` or header/bearer auth.
+- Prefer returning to HMAC mode after cutover.
+
+### Manual launch endpoint (optional)
+
+Call the VM endpoint directly:
+
+```bash
+curl -X POST "https://cookbook.thesweeneys.org:8443/launch" \
+   -H "x-job-launcher-secret: <your-shared-secret>"
+```
+
+Response behavior:
+- Starts bot container (`started: true`) when no active container exists.
+- Returns `started: false` with active container metadata when one is already running.
 
 ### VM launcher stack (Docker Compose on the VM)
 
@@ -835,25 +859,24 @@ cd ~/tts-conductor/vm
 cp .env.example .env
 # Edit vm/.env and set JOB_LAUNCHER_SHARED_SECRET plus any bot limits.
 
-# Ensure Docker can pull from ACR.
-az acr login --name <your-acr-name>
-docker pull <your-acr-login-server>/tts-conductor:latest
+# Build the bot image locally on the VM.
+docker build -t tts-conductor:local ..
 
 docker compose up -d --build
 ```
 
 Notes:
-- `BOT_PULL_ON_START` defaults to `false` for the VM launcher stack. This avoids launch failures when runtime registry auth is unavailable inside the launcher container.
-- Refresh the bot image during deploy/maintenance with `docker pull <your-acr-login-server>/tts-conductor:latest`.
-- If you set `BOT_PULL_ON_START=true`, ensure the launcher runtime has valid registry credentials for every launch request.
+- `BOT_PULL_ON_START` defaults to `false` for the VM launcher stack and should stay `false` for VM-local image operation.
+- Refresh the bot image during deploy/maintenance with a local rebuild (`docker build -t tts-conductor:local ..`).
+- If you set `BOT_PULL_ON_START=true`, ensure `BOT_IMAGE` points to an accessible registry image.
 
 ### VM operation scripts
 
 The `vm/` folder includes helper scripts for common production operations:
-- `vm/update-production.sh`: Pull latest repo + image updates, validate launcher health, and relaunch the bot when needed.
+- `vm/update-production.sh`: Pull latest repo changes, build the bot image locally, validate launcher health, and relaunch the bot when needed.
 - `vm/tts-conductor-restart.sh`: Force recreate launcher services and trigger a bot launch.
 - `vm/docker-maintenance.sh`: Prune Docker resources and log reclaimed space to `/etc/tts-conductor/docker-maintenance.log`.
-- `vm/refresh-bot-token.sh`: Re-auth to Azure/ACR, restart launcher services, relaunch the bot, and verify the running bot token hash matches `.env`.
+- `vm/refresh-bot-token.sh`: Restart launcher services, relaunch the bot, and verify the running bot token hash matches `.env`.
 - `vm/rotate-daily-token-and-relaunch.sh`: Generate a fresh Daily meeting token, update the bot `.env`, recreate the launcher stack, and relaunch the bot — use after a Daily token expires.
 - `vm/cleanup-workflow-runs.sh`: Delete old GitHub Actions workflow runs via the GitHub API to keep the Actions history manageable. Requires `GH_TOKEN` (or `GITHUB_TOKEN`) in the repo-root `.env` and the [`gh` CLI](https://cli.github.com) installed. Defaults: keep 50 runs, dry-run mode on.
 
@@ -875,9 +898,8 @@ cd ~/tts-conductor
 ```
 
 Useful overrides for `vm/refresh-bot-token.sh`:
-- `SKIP_AZURE_LOGIN=true` if host ACR auth is already valid.
 - `WAIT_SECONDS=<n>` to adjust startup wait time for `tts-conductor-bot`.
-- `ROOT_ENV_FILE`, `VM_ENV_FILE`, `AZURE_AUTH_ENV_FILE`, `LAUNCH_URL`, `STATUS_URL`, `BOT_CONTAINER_NAME` for non-default paths/endpoints.
+- `ROOT_ENV_FILE`, `VM_ENV_FILE`, `LAUNCH_URL`, `STATUS_URL`, `BOT_CONTAINER_NAME` for non-default paths/endpoints.
 
 For incident response steps, see `TROUBLESHOOTING.md` -> "Production VM Troubleshooting".
 
@@ -890,12 +912,12 @@ TODO: move runtime secrets out of plain `.env` into a controlled secret solution
 Current intended production behavior for cost + responsiveness:
 - `tts-launcher` and `tts-launcher-proxy` are always running on the VM.
 - The bot container is **not** always in the Daily room.
-- The bot starts when a Daily room hook triggers the Azure Function (`/api/daily-hook` -> `/launch`).
+- The bot starts when a Daily room hook hits the VM endpoint (`/daily-hook` -> `/launch`).
 - After the last non-bot participant leaves, the bot exits after the in-app grace window (currently 45 seconds).
 - The VM launcher stack stays up and ready for the next webhook event.
 
 Why this mode:
-- Avoids Azure cold start / delayed launcher availability.
+- Avoids external relay dependencies in the launch path.
 - Avoids unnecessary Daily room-active minutes (and cost) when no humans are present.
 
 Verified behavior to preserve:
@@ -903,67 +925,6 @@ Verified behavior to preserve:
 - Last human leaves -> bot exits after ~45s.
 - Launcher services remain healthy on VM after bot exits.
 - Rejoin requires a fresh room-hook-triggered launch.
-
-### One-time launcher Azure setup
-
-Create a Function App (Linux Consumption) once, then reuse it for deployments:
-
-```bash
-RG=rg-tts-conductor-prod
-LOCATION=southcentralus
-LAUNCHER_APP=func-tts-launcher-prod
-LAUNCHER_STORAGE=stttslauncherprod001
-
-az storage account create \
-   --resource-group "$RG" \
-   --name "$LAUNCHER_STORAGE" \
-   --location "$LOCATION" \
-   --sku Standard_LRS
-
-az functionapp create \
-   --resource-group "$RG" \
-   --consumption-plan-location "$LOCATION" \
-   --name "$LAUNCHER_APP" \
-   --storage-account "$LAUNCHER_STORAGE" \
-   --runtime python \
-   --runtime-version 3.11 \
-   --functions-version 4
-```
-
-Then deploy launcher code using the manual workflow `Deploy Launcher Function`.
-
-### Daily webhook automation (recommended)
-
-Configure the Daily room-level join hook to call:
-
-```text
-https://<your-launcher-app>.azurewebsites.net/api/daily-hook?secret=<daily-hook-secret>
-```
-
-Event mapping:
-- `meeting.started` (or `first_non_owner_join=true`) -> launcher starts the VM bot container.
-- `participant.left` and `meeting.ended` -> launcher stops the VM bot container **only if** `DAILY_HOOK_ENABLE_STOP_ACTION=true`.
-
-Default behavior is start-only via webhook. This avoids unreliable stop semantics in rooms where the bot itself can keep the room non-empty; shutdown remains controlled by the bot's in-app idle logic.
-
-Some room-level Daily hook payloads may omit a normalized event name. With `DAILY_HOOK_START_ON_UNRECOGNIZED_EVENT=true` (default), the launcher will still start on authorized webhook calls for the configured room.
-
-You can force a specific action with query parameters when needed:
-- `.../api/daily-hook?action=start`
-- `.../api/daily-hook?action=stop`
-
-### Manual launch endpoint (optional)
-
-After deployment, call:
-
-```bash
-curl -X POST "https://<your-launcher-app>.azurewebsites.net/api/launch" \
-   -H "x-job-launcher-secret: <your-shared-secret>"
-```
-
-Response behavior:
-- Starts bot container (`started: true`) when no active container exists.
-- Returns `started: false` with the active container metadata when one is already running.
 
 ### Container runtime defaults
 
