@@ -404,9 +404,14 @@ def handle_speak_auto(
                 while pause_event.is_set() and not stop_event.is_set():
                     time.sleep(0.1)
 
+            if stop_event.is_set():
+                break
+
             # Skip sentence processing if we've reached the end
             if sentence_offset >= sentence_total:
                 # At end of article, just wait for stop/pause/other commands
+                if stop_event.is_set():
+                    break
                 time.sleep(0.1)
                 continue
 

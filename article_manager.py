@@ -418,4 +418,10 @@ class ArticleManager:
                 else:
                     sentences.append(text)
 
+        # Add a synthetic final sentence for read mode.
+        if with_positions:
+            sentences.append(("End of article.", len(article_text)))
+        else:
+            sentences.append("End of article.")
+
         return sentences if sentences else None
