@@ -136,16 +136,39 @@ Notes:
 
 For VM runtime incidents (bot does not join, token rotation not reflected, launcher restart issues), use the VM operation scripts documented in `README.md` under the "VM operation scripts" section.
 
-Recommended first command after rotating `DAILY_TOKEN` in the VM's repository root `.env`:
+If bot logs show `Not authorized: exp-token`, the bot token is expired. Rotate the token and relaunch with:
 
 ```bash
 cd ~/tts-conductor
-./vm/refresh-bot-token.sh
+./vm/rotate-daily-token-and-relaunch.sh instabot 24
 ```
 
-What this script verifies:
-- Recreates launcher services and relaunches `tts-conductor-bot`
-- Confirms the running bot container's `DAILY_TOKEN` hash matches `.env`
+Use `./vm/refresh-bot-token.sh` only after you have already rotated `DAILY_TOKEN` in `.env` and want to confirm the running container matches that value.
+
+### Automated Daily token rotation (systemd timer)
+
+The VM can rotate tokens automatically via:
+- `tts-daily-token-rotate.timer`
+- `tts-daily-token-rotate.service`
+
+Check timer/service status:
+
+```bash
+sudo systemctl status tts-daily-token-rotate.timer
+sudo systemctl status tts-daily-token-rotate.service
+```
+
+View recent rotation logs:
+
+```bash
+sudo journalctl -u tts-daily-token-rotate.service -n 80 --no-pager
+```
+
+Run an immediate manual rotation via systemd:
+
+```bash
+sudo systemctl start tts-daily-token-rotate.service
+```
 
 If it fails, review the script output first, then check launcher health/status endpoints:
 
