@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Instapaper Assistant Docs</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #4b5563;
+      --border: #e5e7eb;
+      --link: #0b57d0;
+    }
+    body {
+      margin: 0;
+      padding: 2rem 1rem 4rem;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    h1 {
+      margin: 0 0 0.5rem;
+      font-size: 2rem;
+    }
+    p {
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .card {
+      margin-top: 1rem;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.2rem;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+    }
+    h2 {
+      margin: 0 0 0.5rem;
+      font-size: 1.15rem;
+    }
+    ul {
+      margin: 0.5rem 0 0;
+      padding-left: 1.2rem;
+    }
+    li {
+      margin: 0.35rem 0;
+    }
+    a {
+      color: var(--link);
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+    .small {
+      margin-top: 1.5rem;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <h1>Instapaper Assistant Docs</h1>
+    <p>
+      This page is served from the repository's <code>docs/</code> folder via GitHub Pages.
+      Use the links below to view walkthrough scripts and supporting assets.
+    </p>
+
+    <section class="card">
+      <h2>Video Walkthrough Scripts</h2>
+      <ul>
+        <li><a href="video-walkthrough/introducing-instapaper-assistant.md">Introducing Instapaper Assistant</a></li>
+        <li><a href="video-walkthrough/background-on-instapaper-assistant.md">Background on Instapaper Assistant</a></li>
+        <li><a href="video-walkthrough/a-tour-of-instapaper-assistant-features.md">A Tour of Instapaper Assistant Features</a></li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>User Journey Assets</h2>
+      <ul>
+        <li><a href="user-journey.png">User Journey Diagram (PNG)</a></li>
+        <li><a href="user-journey.mmd">User Journey Source (Mermaid)</a></li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>Validation Checklist</h2>
+      <ul>
+        <li><a href="voice-daily-validation-checklist.md">Voice + Daily Validation Checklist</a></li>
+      </ul>
+    </section>
+
+    <p class="small">
+      If you change document names, update links in this page to keep navigation working.
+    </p>
+  </main>
+</body>
+</html>
