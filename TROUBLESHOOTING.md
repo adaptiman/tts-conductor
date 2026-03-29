@@ -6,7 +6,7 @@ If you're experiencing automatic changes to files after committing (especially w
 
 ### 1. VS Code Auto-Formatting
 - **Format on Save**: `"editor.formatOnSave": true`
-- **Trim Trailing Whitespace**: `"files.trimTrailingWhitespace": true` 
+- **Trim Trailing Whitespace**: `"files.trimTrailingWhitespace": true`
 - **Auto Whitespace**: `"editor.trimAutoWhitespace": true`
 
 ### 2. Git Hooks
@@ -51,7 +51,7 @@ If you're experiencing automatic changes to files after committing (especially w
 
 1. Make a small change to README.md
 2. Save the file
-3. Commit the change  
+3. Commit the change
 4. Check if automatic changes still occur
 
 If problems persist, check:
