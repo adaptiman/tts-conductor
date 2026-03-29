@@ -1,6 +1,6 @@
 # Instapaper Reader Voice Controlled App
 
-A Python Speech-to-Text / Text-to-Speech (STT-TTS) application with console commands for reading and managing Instapaper articles.
+A Python-based 100% Audio (STT-TTS) Control application for Instapaper. This application started out as a Python console app and has evolved to include voice command support with multiple STT/TTS options and a Daily WebRTC transport mode for cloud/VM deployment.
 
 ## Architecture
 
