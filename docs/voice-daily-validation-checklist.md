@@ -1,3 +1,8 @@
+---
+layout: default
+title: Voice Daily Validation Checklist
+---
+
 # Voice Daily Validation Checklist
 
 Use this checklist for release sign-off of Daily voice behavior.

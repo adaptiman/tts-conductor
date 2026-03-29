@@ -1,3 +1,8 @@
+---
+layout: default
+title: A Tour of Instapaper Assistant Features
+---
+
 # A Tour of Instapaper Assistant Features
 
 ![Instabot 2](https://raw.githubusercontent.com/adaptiman/tts-conductor/0.8.0328.1/assets/Instabot2.png)
