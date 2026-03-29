@@ -1,6 +1,8 @@
-# Instapaper Reader Voice Controlled App
+# Instapaper Assistant Voice Controlled App
 
-A Python-based 100% Audio (STT-TTS) Control application for Instapaper. This application started out as a Python console app and has evolved to include voice command support with multiple STT/TTS options and a Daily WebRTC transport mode for cloud/VM deployment.
+A Python-based 100% audio controlled application for Instapaper. This application started out as a Python console app and has evolved to include voice command support with multiple STT/TTS options and a Daily WebRTC transport mode for cloud/VM deployment.
+
+Docs site (GitHub Pages): https://adaptiman.github.io/tts-conductor/
 
 ## Architecture
 
