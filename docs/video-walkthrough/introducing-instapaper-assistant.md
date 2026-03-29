@@ -3,4 +3,4 @@ layout: default
 title: Introducing Instapaper Assistant
 ---
 
-![Instabot](https://raw.githubusercontent.com/adaptiman/tts-conductor/0.8.0328.1/assets/Instabot.png)
+![Instabot](../assets/Instabot.png)

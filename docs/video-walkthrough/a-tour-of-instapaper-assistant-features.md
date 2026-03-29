@@ -5,7 +5,7 @@ title: A Tour of Instapaper Assistant Features
 
 # A Tour of Instapaper Assistant Features
 
-![Instabot 2](https://raw.githubusercontent.com/adaptiman/tts-conductor/0.8.0328.1/assets/Instabot2.png)
+![Instabot 2](../assets/Instabot2.png)
 
 Welcome to the feature tour. For the purposes of this demo, my designer is displaying his Instapaper account on two different screens, so you can see fully what's going on. Keep in mind that you don't need to "see" Instapaper for me to work. I work solely based upon your voice commands.
 
