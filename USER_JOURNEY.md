@@ -1,6 +1,6 @@
 # User Journey
 
-![User Journey Workflow](docs/user-journey.png)
+![User Journey Workflow](docs/assets/user-journey.png)
 
 ## Mermaid Source
 
