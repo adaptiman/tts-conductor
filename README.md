@@ -1,5 +1,7 @@
 # Instapaper Assistant Voice Controlled App
 
+[![Watch demo video](https://github.com/adaptiman/tts-conductor/releases/download/0.8.0328.1/tts-conductor-thumbnail.jpg)](https://github.com/adaptiman/tts-conductor/releases/download/0.8.0328.1/Instapaper-Assistant.mp4)
+
 A Python-based 100% audio controlled application for Instapaper. This application started out as a Python console app and has evolved to include voice command support with multiple STT/TTS options and a Daily WebRTC transport mode for cloud/VM deployment.
 
 Docs site (GitHub Pages): https://adaptiman.github.io/tts-conductor/
