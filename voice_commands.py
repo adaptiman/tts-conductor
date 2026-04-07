@@ -769,6 +769,19 @@ class VoiceCommandListener:
             0.0, float(empty_room_shutdown_seconds)
         )
 
+        daily_left_shutdown_seconds = 20.0
+        left_timeout_value = os.getenv("DAILY_LEFT_SHUTDOWN_SECONDS")
+        if left_timeout_value is not None and left_timeout_value.strip():
+            try:
+                daily_left_shutdown_seconds = float(left_timeout_value)
+            except ValueError:
+                logger.warning(
+                    "[VoiceCommands] Invalid "
+                    f"DAILY_LEFT_SHUTDOWN_SECONDS={left_timeout_value!r}; "
+                    f"using {daily_left_shutdown_seconds:.0f}s."
+                )
+        self._daily_left_shutdown_seconds = max(0.0, float(daily_left_shutdown_seconds))
+
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._task: Optional[PipelineTask] = None
@@ -794,6 +807,7 @@ class VoiceCommandListener:
         self._remote_participants: set[str] = set()
         self._had_remote_participant = False
         self._empty_room_shutdown_task: Optional[asyncio.Task] = None
+        self._daily_left_shutdown_task: Optional[asyncio.Task] = None
         self._metrics_observer: Optional[PipelineMetricsObserver] = None
         self._user_turn_processor: Optional[UserTurnProcessor] = None
         self._user_mute_processor: Optional[StrategyUserMuteProcessor] = None
@@ -1360,6 +1374,50 @@ class VoiceCommandListener:
 
         self._empty_room_shutdown_task = asyncio.create_task(_shutdown_if_still_empty())
 
+    def _cancel_daily_left_shutdown(self) -> None:
+        task = self._daily_left_shutdown_task
+        if task is None:
+            return
+
+        if not task.done():
+            task.cancel()
+        self._daily_left_shutdown_task = None
+
+    def _schedule_daily_left_shutdown(self) -> None:
+        if not self._shutdown_when_room_empty:
+            return
+
+        self._cancel_daily_left_shutdown()
+
+        if self._daily_left_shutdown_seconds <= 0:
+            self.request_shutdown(
+                "Left Daily room; shutting down immediately to allow clean relaunch."
+            )
+            return
+
+        delay = self._daily_left_shutdown_seconds
+        logger.warning(
+            "[VoiceCommands] Left Daily room; scheduling shutdown in "
+            f"{delay:.0f}s unless rejoined."
+        )
+
+        async def _shutdown_if_not_rejoined() -> None:
+            try:
+                await asyncio.sleep(delay)
+                if not self._daily_joined:
+                    self.request_shutdown(
+                        "Left Daily room and did not rejoin; terminating process "
+                        "to allow launcher restart."
+                    )
+            except asyncio.CancelledError:
+                return
+            finally:
+                self._daily_left_shutdown_task = None
+
+        self._daily_left_shutdown_task = asyncio.create_task(
+            _shutdown_if_not_rejoined()
+        )
+
     def _describe_room_audio_target(self) -> str:
         with self._utterance_lock:
             active = dict(self._active_utterance) if self._active_utterance is not None else None
@@ -1557,6 +1615,7 @@ class VoiceCommandListener:
             self._daily_transport = None
             self._daily_joined = False
             self._cancel_empty_room_shutdown()
+            self._cancel_daily_left_shutdown()
             with self._participant_lock:
                 self._remote_participants.clear()
                 self._had_remote_participant = False
@@ -1846,6 +1905,7 @@ class VoiceCommandListener:
         @transport.event_handler("on_joined")
         async def on_joined(_transport, data):
             self._daily_joined = True
+            self._cancel_daily_left_shutdown()
             self._cancel_empty_room_shutdown()
             with self._pending_daily_lock:
                 pending = list(self._pending_daily_messages)
@@ -1868,6 +1928,9 @@ class VoiceCommandListener:
         @transport.event_handler("on_left")
         async def on_left(_transport):
             self._daily_joined = False
+            with self._participant_lock:
+                self._remote_participants.clear()
+            self._schedule_daily_left_shutdown()
 
         @transport.event_handler("on_active_speaker_changed")
         async def on_active_speaker_changed(_transport, participant):

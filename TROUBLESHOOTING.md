@@ -143,6 +143,18 @@ cd ~/tts-conductor
 ./vm/rotate-daily-token-and-relaunch.sh instabot 24
 ```
 
+If the bot process is still running but has been removed/disconnected from the
+Daily room (cannot rejoin because launcher sees container as active), force a
+clean stop+start via launcher:
+
+```bash
+cd ~/tts-conductor
+./vm/force-relaunch-bot.sh
+```
+
+This calls launcher `/stop` and `/launch`, then waits for
+`tts-conductor-bot` to reach `running` state.
+
 Use `./vm/refresh-bot-token.sh` only after you have already rotated `DAILY_TOKEN` in `.env` and want to confirm the running container matches that value.
 
 ### Automated Daily token rotation (systemd timer)

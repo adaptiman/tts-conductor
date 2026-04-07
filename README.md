@@ -189,9 +189,18 @@ In Daily + headless mode, the bot now auto-shuts down after the room is empty
 for a grace period (default: 45 seconds). This helps container platforms scale
 down when nobody is connected.
 
+In Daily + headless mode, the bot also auto-shuts down if it gets removed from
+the Daily room and does not rejoin within a grace period (default: 20 seconds).
+This avoids a stale unjoined process blocking launcher-based restarts.
+
 You can change the grace period with:
 ```bash
 EMPTY_ROOM_SHUTDOWN_SECONDS=90
+```
+
+Tune left-room recovery with:
+```bash
+DAILY_LEFT_SHUTDOWN_SECONDS=30
 ```
 
 Optional Daily viewer page:
