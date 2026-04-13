@@ -140,6 +140,17 @@ BACKUP_FILE="${BOT_ENV_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
 cp "$BOT_ENV_FILE" "$BACKUP_FILE"
 log "Backed up env file to $BACKUP_FILE"
 
+BACKUP_RETENTION_COUNT="${BACKUP_RETENTION_COUNT:-7}"
+if [[ "$BACKUP_RETENTION_COUNT" =~ ^[0-9]+$ ]] && (( BACKUP_RETENTION_COUNT > 0 )); then
+  mapfile -t backup_files < <(find "$(dirname "$BOT_ENV_FILE")" -maxdepth 1 -type f -name "$(basename "$BOT_ENV_FILE").bak.*" -printf '%T@ %p\n' | sort -nr | awk '{print $2}')
+  if (( ${#backup_files[@]} > BACKUP_RETENTION_COUNT )); then
+    for old_backup in "${backup_files[@]:BACKUP_RETENTION_COUNT}"; do
+      rm -f "$old_backup"
+      log "Pruned old backup: $old_backup"
+    done
+  fi
+fi
+
 if grep -q '^DAILY_TOKEN=' "$BOT_ENV_FILE"; then
   sed -i "s|^DAILY_TOKEN=.*$|DAILY_TOKEN=${NEW_TOKEN}|" "$BOT_ENV_FILE"
 else

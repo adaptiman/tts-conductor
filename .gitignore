@@ -73,6 +73,7 @@ venv.bak/
 
 # Environments
 .env
+.env.bak.*
 .env.local
 .env.development.local
 .env.test.local
