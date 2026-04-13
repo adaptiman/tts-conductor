@@ -5,6 +5,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import termios
 import textwrap
@@ -29,9 +30,20 @@ from output_adapter import (
     SpeakingOutputAdapter,
 )
 
+# Emoji and pictographic symbols have no spoken equivalent and can cause
+# TTS providers to stall or produce unexpected output.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"  # supplementary emoji / symbol / pictograph blocks
+    "\U00002600-\U000027BF"  # misc symbols + dingbats (BMP)
+    "\U0000FE00-\U0000FE0F"  # variation selectors that affect emoji rendering
+    "]+",
+    re.UNICODE,
+)
+
 
 def _sanitize_tts_text(text: str) -> str:
-    """Remove control/format characters that can break TTS providers."""
+    """Remove control/format characters and emoji that can break TTS providers."""
     cleaned_chars = []
     for ch in text:
         category = unicodedata.category(ch)
@@ -41,6 +53,9 @@ def _sanitize_tts_text(text: str) -> str:
         cleaned_chars.append(ch)
 
     cleaned = "".join(cleaned_chars)
+    # Strip emoji and pictographic symbols — they have no spoken form and can
+    # cause TTS providers to stall for an extended period.
+    cleaned = _EMOJI_RE.sub("", cleaned)
     cleaned = " ".join(cleaned.split())
     return cleaned.strip()
 
@@ -410,7 +425,20 @@ def handle_speak_auto(
 
             # Skip sentence processing if we've reached the end
             if sentence_offset >= sentence_total:
-                # At end of article, just wait for stop/pause/other commands
+                # Check for a seek command (e.g. "back N") issued from end-of-article.
+                # Without this check, seek_delta is never consumed and commands appear
+                # dropped/backlogged from the user's perspective.
+                if sentence_state is not None and sentence_state_lock is not None:
+                    with sentence_state_lock:
+                        end_seek_delta = int(sentence_state.get("seek_delta", 0) or 0)
+                        if end_seek_delta != 0:
+                            sentence_state["seek_delta"] = 0
+                    if end_seek_delta != 0:
+                        sentence_offset = max(0, min(sentence_total - 1, sentence_offset + end_seek_delta))
+                        reached_end = False
+                        logger.info("[speak] end-of-article seek_delta={} → resuming at offset {}", end_seek_delta, sentence_offset)
+                        continue
+
                 if stop_event.is_set():
                     break
                 time.sleep(0.1)

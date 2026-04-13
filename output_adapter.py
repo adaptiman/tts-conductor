@@ -22,6 +22,16 @@ _TTS_SKIP_RE = re.compile(
     r"|^\[transport\]"              # low-level transport diagnostics
 )
 
+# Emoji and pictographic symbols have no spoken equivalent.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"  # supplementary emoji / symbol / pictograph blocks
+    "\U00002600-\U000027BF"  # misc symbols + dingbats (BMP)
+    "\U0000FE00-\U0000FE0F"  # variation selectors that affect emoji rendering
+    "]+",
+    re.UNICODE,
+)
+
 
 class OutputAdapter(Protocol):
     """Interface for presenting conductor output."""
@@ -126,7 +136,7 @@ class SpeakingOutputAdapter:
     def write_line(self, text: str = "") -> None:
         if not self._should_speak(text):
             return
-        spoken_text = " ".join(text.split())
+        spoken_text = _EMOJI_RE.sub("", " ".join(text.split())).strip()
         if not spoken_text:
             return
         try:
